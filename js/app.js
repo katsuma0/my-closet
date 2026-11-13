@@ -1,6 +1,6 @@
 import { db, uid } from './db.js';
 import { haptic, setHaptics, hapticsEnabled } from './haptics.js';
-import { loadImage, fileToDataURL, rasterize, computeMask, renderSticker, renderMaskPreview } from './cutout.js';
+import { loadImage, rasterize, computeMask, renderSticker, renderMaskPreview } from './cutout.js';
 import { harmonies, INSPIRATION, colorName, closeness, textOn, hexToHsl } from './color.js';
 
 /* ------------------------------------------------------------------ data */
@@ -34,6 +34,7 @@ const ICON = {
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
   eraser: '<path d="m4 15 9-9 7 7-6 6H8zM9 10l7 7M8 20h12"/>',
   undo: '<path d="M9 7 4 12l5 5M4 12h11a5 5 0 0 1 0 10h-2"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
   rotate: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   swatch: '<circle cx="12" cy="12" r="8"/>',
@@ -63,6 +64,20 @@ const money = (n) => {
   return state.settings.currency + s;
 };
 const itemById = (id) => state.items.find((i) => i.id === id);
+// keep digits and a single decimal separator (comma typed on some keyboards becomes a dot)
+const cleanPrice = (v) => {
+  const t = String(v).replace(/,/g, '.').replace(/[^0-9.]/g, '');
+  const i = t.indexOf('.');
+  return i < 0 ? t : t.slice(0, i + 1) + t.slice(i + 1).replace(/\./g, '').slice(0, 2);
+};
+// how a stored price reads inside an input: 68 → "68", 12.5 → "12.50"
+const priceText = (n) => (Number(n) % 1 === 0 ? String(Number(n)) : Number(n).toFixed(2));
+// '' / null → unpriced (null); otherwise a number rounded to cents
+const parsePrice = (v) => {
+  if (v === null || v === undefined || String(v).trim() === '') return null;
+  const n = parseFloat(cleanPrice(v));
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+};
 
 /* ------------------------------------------------------------------ press / long-press */
 
@@ -251,22 +266,50 @@ function render() {
 
 /* ------------------------------------------------------------------ closet view */
 
+// Names a piece from its main colour and what it is: "Sage knit", "Denim jeans", "Beige accessory".
+const SINGULAR = { 'T-shirts': 't-shirt', Shirts: 'shirt', Blouses: 'blouse', Knits: 'knit', Hoodies: 'hoodie', Tanks: 'tank', Jackets: 'jacket', Coats: 'coat', Dresses: 'dress', Skirts: 'skirt', Bags: 'bag', Hats: 'hat', Belts: 'belt', Scarves: 'scarf', Watches: 'watch' };
+const CAT_NOUN = { top: 'top', bottom: 'bottoms', shoes: 'shoes', acc: 'accessory' };
+function autoName(colors, cat, sub) {
+  const noun = sub ? (SINGULAR[sub] || sub.toLowerCase()) : (CAT_NOUN[cat] || 'piece');
+  const n = `${colors?.[0] ? colorName(colors[0]) + ' ' : ''}${noun}`;
+  return n.charAt(0).toUpperCase() + n.slice(1);
+}
+
+/** Decode a photo once: a modest JPEG "original" (so the cut-out can be re-tuned later) plus working pixels. */
+async function photoFromFile(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await loadImage(url);
+    const r = rasterize(img, 1000);
+    const cc = document.createElement('canvas'); cc.width = r.width; cc.height = r.height;
+    cc.getContext('2d').putImageData(r, 0, 0);
+    return { original: cc.toDataURL('image/jpeg', 0.86), raster: rasterize(img, 900) };
+  } finally { URL.revokeObjectURL(url); }
+}
+
+// A piece is "priced" once it has any number on it (0 counts: gifts, hand-me-downs).
+const isPriced = (it) => it.price !== null && it.price !== undefined && it.price !== '' && Number.isFinite(Number(it.price));
+
 function totals() {
-  const by = Object.fromEntries(CAT_ORDER.map((c) => [c, { n: 0, v: 0 }]));
-  let v = 0;
-  for (const it of state.items) { const p = Number(it.price) || 0; v += p; if (by[it.cat]) { by[it.cat].n++; by[it.cat].v += p; } }
-  return { v, n: state.items.length, by };
+  const by = Object.fromEntries(CAT_ORDER.map((c) => [c, { n: 0 }]));
+  let v = 0, priced = 0;
+  for (const it of state.items) {
+    if (isPriced(it)) { v += Number(it.price); priced++; }
+    if (by[it.cat]) by[it.cat].n++;
+  }
+  return { v: Math.round(v * 100) / 100, n: state.items.length, priced, by };
 }
 
 function renderCloset() {
   const root = $('#view-closet');
   root.innerHTML = '';
   const t = totals();
-  const maxV = Math.max(1, ...CAT_ORDER.map((c) => t.by[c].v || t.by[c].n));
-  const tally = h(`<button class="tally">
-      <div><div class="label">closet value</div><div class="value">${money(t.v)}</div>
-      <div class="count">${t.n} piece${t.n === 1 ? '' : 's'}</div></div>
-      <div class="tally-bars">${CAT_ORDER.map((c) => `<i style="height:${8 + 36 * ((t.by[c].v || t.by[c].n) / maxV)}px"></i>`).join('')}</div>
+  const maxN = Math.max(1, ...CAT_ORDER.map((c) => t.by[c].n));
+  const nLooks = state.outfits.length;
+  const tally = h(`<button class="tally" aria-label="Open the tally">
+      <div><div class="label">in your closet</div><div class="value">${t.n} piece${t.n === 1 ? '' : 's'}</div>
+      <div class="count">${nLooks ? `${nLooks} look${nLooks === 1 ? '' : 's'} styled` : 'no looks yet'}</div></div>
+      <div class="tally-bars">${CAT_ORDER.map((c) => `<i style="height:${8 + 36 * (t.by[c].n / maxN)}px"></i>`).join('')}</div>
     </button>`);
   press(tally, { tap: openTally, long: openTally });
   root.append(tally);
@@ -325,7 +368,7 @@ function renderCloset() {
   items.forEach((it, idx) => {
     const card = h(`<button class="piece" style="animation-delay:${Math.min(idx, 12) * 35}ms">
       <img class="sticker" src="${it.sticker}" alt="${esc(it.name)}" loading="lazy" />
-      <div class="meta"><span class="name">${esc(it.name)}</span>${it.price ? `<span class="price">${money(it.price)}</span>` : ''}</div>
+      <div class="meta"><span class="name">${esc(it.name)}</span></div>
       <div class="dots">${(it.colors || []).map((c) => `<i style="background:${c}"></i>`).join('')}</div></button>`);
     press(card, { tap: () => openDetail(it), long: (e) => itemMenu(it, card, e) });
     grid.append(card);
@@ -367,8 +410,8 @@ function openDetail(it) {
     <h2>${esc(it.name)}</h2>
     <p class="sub">${esc(CATS[it.cat]?.label || '')}${it.sub ? ' · ' + esc(it.sub) : ''}</p>
     <div class="kv">
-      <div><small>price</small><b>${it.price ? money(it.price) : '—'}</b></div>
       <div><small>in looks</small><b>${outfitsWith.length}</b></div>
+      <div><small>added</small><b>${new Date(it.created).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</b></div>
     </div>
     <div class="field"><span class="field-label">colours</span><div class="swatches">${(it.colors || []).map((c) => `<button class="sw" data-c="${c}" style="background:${c}" aria-label="${colorName(c)}"></button>`).join('')}</div></div>
     <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="edit">${svg('edit')} Edit</button><button class="btn" data-a="look">${svg('look')} Style it</button></div>
@@ -417,9 +460,10 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     const p = h(`<div class="pick">
       <div class="pick-btns">
         <button class="btn" data-a="cam">${svg('camera')}<span>take photo</span></button>
-        <button class="btn soft" data-a="lib">${svg('image')}<span>choose photo</span></button>
+        <button class="btn soft" data-a="lib">${svg('image')}<span>choose photos</span></button>
       </div>
       <div class="tip"><span class="sun">${svg('sun')}</span><span><b>For the cleanest cut-out</b>, lay the piece flat on a light, plain background (a bedsheet, floor or wall), in soft even light, with a little space around it.</span></div>
+      <div class="tip many"><span class="sun">${svg('look')}</span><span><b>Adding lots?</b> Choose several photos at once and they’ll all be cut out and added together.</span></div>
     </div>`);
     press($('[data-a=cam]', p), { tap: () => pickFile('camera') });
     press($('[data-a=lib]', p), { tap: () => pickFile('library') });
@@ -430,23 +474,31 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   function pickFile(kind) {
     const input = kind === 'camera' ? $('#file-camera') : $('#file-library');
     input.value = '';
+    // several photos at once → the batch flow (only while starting a brand-new piece)
+    const multi = kind === 'library' && !item && !st.raster;
+    if (kind === 'library') input.multiple = multi;
     input.onchange = async () => {
-      const f = input.files?.[0];
-      if (!f) return;
-      await useFile(f);
+      const files = [...(input.files || [])];
+      if (!files.length) return;
+      if (multi && files.length > 1) {
+        s.close();
+        openBatch(files, cat || (state.filterCat !== 'all' ? state.filterCat : null));
+        return;
+      }
+      await useFile(files[0]);
     };
     input.click();
   }
 
   async function useFile(f) {
-    const url = await fileToDataURL(f);
-    const img = await loadImage(url);
-    // store a modest-size original so the cut can be re-tuned later
-    const r = rasterize(img, 1000);
-    const cc = document.createElement('canvas'); cc.width = r.width; cc.height = r.height;
-    cc.getContext('2d').putImageData(r, 0, 0);
-    st.original = cc.toDataURL('image/jpeg', 0.86);
-    st.raster = rasterize(img, 900);
+    let shot;
+    try { shot = await photoFromFile(f); } catch {
+      haptic('warning'); toast('that photo could not be read');
+      if (!st.raster && !item) renderPick();
+      return;
+    }
+    st.original = shot.original;
+    st.raster = shot.raster;
     st.seeds = [];
     renderStage();
     await process();
@@ -536,7 +588,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       <div class="field"><label>category</label><div class="seg">${CAT_ORDER.map((k) => `<button data-cat="${k}" class="${st.cat === k ? 'active' : ''}">${svg(k)}${CATS[k].label}</button>`).join('')}</div></div>
       <div class="field"><label>type</label><div class="wrap-chips" data-subs></div></div>
       <div class="field"><label>name</label><input class="input" data-name placeholder="e.g. Linen shirt" value="${esc(st.name)}" maxlength="40" /></div>
-      <div class="field"><label>price <span style="text-transform:none;letter-spacing:0">(optional)</span></label><div class="price-wrap"><span>${esc(state.settings.currency)}</span><input class="input" data-price inputmode="decimal" placeholder="0" value="${st.price}" /></div></div>
+      ${item ? '' : `<div class="field"><label>price <span style="text-transform:none;letter-spacing:0">(optional — or add it later in the tally)</span></label><div class="price-wrap"><span>${esc(state.settings.currency)}</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
       <div class="field"><label>colours found</label><div class="swatches" data-sw></div></div>
       <button class="btn sage block" data-a="save">${svg('check')} ${item ? 'save changes' : 'add to closet'}</button>
     </div>`);
@@ -547,10 +599,11 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       renderSubs();
     }, hapticTap: 'select' }));
     const name = $('[data-name]', d); name.addEventListener('input', () => { st.name = name.value; });
-    const price = $('[data-price]', d); price.addEventListener('input', () => {
-      price.value = price.value.replace(/[^0-9.,]/g, '').replace(',', '.');
-      st.price = price.value;
-    });
+    const price = $('[data-price]', d);
+    if (price) {
+      price.value = st.price === null ? '' : st.price;
+      price.addEventListener('input', () => { price.value = cleanPrice(price.value); st.price = price.value; });
+    }
     press($('[data-a=save]', d), { tap: save, hapticTap: null });
     renderSubs();
     syncSwatches();
@@ -589,13 +642,12 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   async function save() {
     if (!st.result) { haptic('warning'); toast('add a photo first'); return; }
     const colors = st.result.colors || [];
-    const autoName = `${colors[0] ? colorName(colors[0]) + ' ' : ''}${(st.sub || CATS[st.cat].label).replace(/s$/, '').toLowerCase()}`;
     const rec = {
       id: item?.id || uid(),
       created: item?.created || Date.now(),
-      name: (st.name || '').trim() || autoName.charAt(0).toUpperCase() + autoName.slice(1),
+      name: (st.name || '').trim() || autoName(colors, st.cat, st.sub),
       cat: st.cat, sub: st.sub,
-      price: st.price === '' ? null : Math.round(parseFloat(st.price) * 100) / 100 || 0,
+      price: parsePrice(st.price),
       sticker: st.result.dataURL,
       colors,
       original: st.original,
@@ -625,11 +677,196 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   } else renderPick();
 }
 
+/* ------------------------------------------------------------------ batch add */
+
+const BATCH_MAX = 30;
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Several photos picked at once: cut them all out, ask only "what is it?" for each, add them together. */
+function openBatch(files, presetCat = null) {
+  const images = files.filter((f) => !f.type || f.type.startsWith('image/'));
+  const overflow = Math.max(0, images.length - BATCH_MAX);
+  // status: wait → busy → done | fail (unreadable) | gone (removed by hand or already saved)
+  const entries = images.slice(0, BATCH_MAX).map((file) => ({ file, status: 'wait', cat: presetCat, result: null, original: null, el: null }));
+  let failed = files.length - images.length, cancelled = false, saving = false;
+
+  const c = h(`<div class="batch">
+    <div class="editor-top">
+      <button class="round" data-a="back" aria-label="Cancel">${svg('close')}</button>
+      <h2 data-title></h2>
+    </div>
+    <div class="batch-progress"><div class="bar"><i data-bar></i></div><span data-status></span></div>
+    <div class="batch-all"><span class="field-label">they’re all</span><div class="chips">${CAT_ORDER.map((k) => `<button class="chip small" data-all="${k}">${CATS[k].label}</button>`).join('')}</div></div>
+    <div class="batch-list" data-list></div>
+    <div class="batch-foot">
+      <button class="btn block" data-a="save"></button>
+      <p class="batch-hint">names are filled in for you · edit any piece later</p>
+    </div>
+  </div>`);
+  const s = sheet(c, { full: true });
+  s.el.style.paddingBottom = '0';
+  const listEl = $('[data-list]', c);
+  const live = () => entries.filter((e) => e.status !== 'fail' && e.status !== 'gone');
+
+  function paint(e) {
+    if (e.status === 'fail' || e.status === 'gone') { e.el?.remove(); e.el = null; return; }
+    if (!e.el) {
+      e.el = h(`<div class="batch-row">
+        <div class="b-thumb"><div class="spinner"></div></div>
+        <div class="b-main">
+          <div class="b-cats">${CAT_ORDER.map((k) => `<button data-cat="${k}" aria-label="${CATS[k].label}" title="${CATS[k].label}">${svg(k)}</button>`).join('')}</div>
+          <div class="b-name"></div>
+        </div>
+        <button class="b-x" aria-label="Remove this photo">${svg('close')}</button>
+      </div>`);
+      $$('[data-cat]', e.el).forEach((b) => press(b, {
+        tap: () => { e.cat = b.dataset.cat; paint(e); sync(); },
+        long: () => setAll(b.dataset.cat), // long-press = this category for every photo
+        hapticTap: 'select',
+      }));
+      press($('.b-x', e.el), { tap: () => drop(e) });
+      listEl.append(e.el);
+    }
+    if (e.status === 'done' && !$('img', e.el)) $('.b-thumb', e.el).innerHTML = `<img src="${e.result.dataURL}" alt="" />`;
+    e.el.classList.toggle('busy', e.status === 'busy');
+    e.el.classList.toggle('todo', !e.cat);
+    $$('[data-cat]', e.el).forEach((b) => {
+      b.classList.toggle('active', b.dataset.cat === e.cat);
+      b.setAttribute('aria-pressed', String(b.dataset.cat === e.cat));
+    });
+    $('.b-name', e.el).textContent = !e.cat ? 'what is it?'
+      : e.status === 'done' ? autoName(e.result.colors, e.cat, null)
+      : CATS[e.cat].label.toLowerCase();
+  }
+
+  function sync() {
+    const l = live();
+    const done = l.filter((e) => e.status === 'done').length, cutting = l.length - done;
+    const missing = l.filter((e) => !e.cat).length;
+    const pieces = `${l.length} piece${l.length === 1 ? '' : 's'}`;
+    $('[data-title]', c).textContent = `add ${pieces}`;
+    $('[data-bar]', c).style.width = `${l.length ? (done / l.length) * 100 : 100}%`;
+    const notes = [];
+    if (failed) notes.push(`${failed} couldn’t be read`);
+    if (overflow) notes.push(`first ${BATCH_MAX} only`);
+    $('[data-status]', c).textContent = [cutting ? `cutting out ${Math.min(done + 1, l.length)} of ${l.length}` : 'all cut out', ...notes].join(' · ');
+    const btn = $('[data-a=save]', c);
+    btn.className = `btn block ${!cutting && !missing ? 'sage' : 'soft'}`;
+    btn.innerHTML = missing ? `pick a category for ${missing === l.length ? (l.length === 1 ? 'it' : 'each one') : `${missing} more`}`
+      : cutting ? 'cutting out…'
+      : `${svg('check')} add ${pieces} to closet`;
+    $('.batch-all', c).style.display = l.length > 1 ? '' : 'none';
+    $$('[data-all]', c).forEach((b) => b.classList.toggle('active', l.length > 0 && l.every((e) => e.cat === b.dataset.all)));
+  }
+
+  function setAll(cat) {
+    live().forEach((e) => { e.cat = cat; paint(e); });
+    sync();
+    toast(`all set to ${CATS[cat].label.toLowerCase()}`);
+  }
+
+  function drop(e) {
+    e.status = 'gone'; e.file = null; e.result = null; e.original = null;
+    paint(e); sync();
+    if (!live().length) { cancelled = true; s.close(); toast('nothing left to add'); }
+  }
+
+  async function save() {
+    if (saving) return;
+    const l = live();
+    if (!l.length) return;
+    const first = l.find((e) => !e.cat);
+    if (first) {
+      haptic('warning');
+      first.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      first.el.classList.remove('nudge'); void first.el.offsetWidth; first.el.classList.add('nudge');
+      return;
+    }
+    if (l.some((e) => e.status !== 'done')) { haptic('warning'); toast('still cutting out — one moment'); return; }
+    saving = true;
+    const now = Date.now();
+    let added = 0;
+    try {
+      for (const e of l) {
+        const rec = {
+          id: uid(), created: now + added,
+          name: autoName(e.result.colors, e.cat, null), cat: e.cat, sub: null, price: null,
+          sticker: e.result.dataURL, colors: e.result.colors || [],
+          original: e.original, cut: { tolerance: 32, seeds: [], removeBg: true },
+        };
+        await db.put('items', rec);
+        state.items.push(rec);
+        e.status = 'gone'; added++;
+      }
+    } catch { /* most likely the device is out of storage; whatever was saved stays saved */ }
+    saving = false;
+    if (added) {
+      // make sure the new pieces are visible behind the sheet
+      if (state.filterCat !== 'all' && l.some((e) => e.cat !== state.filterCat)) state.filterCat = 'all';
+      state.filterSub = null;
+    }
+    if (added < l.length) {
+      haptic('warning');
+      toast(added ? `storage is full — added ${added} of ${l.length}` : 'storage is full — nothing was added');
+      entries.forEach(paint); sync(); render();
+      return;
+    }
+    cancelled = true;
+    haptic('success');
+    toast(`${added} piece${added === 1 ? '' : 's'} added to your closet`);
+    s.close();
+    if (state.view !== 'closet') setView('closet'); else render();
+  }
+
+  async function tryClose() {
+    if (saving) return;
+    const n = live().length;
+    if (n && !(await confirmSheet('Leave these behind?', `None of the ${n} photo${n === 1 ? '' : 's'} will be added.`, 'Discard'))) return;
+    cancelled = true;
+    s.close();
+  }
+  s.dismiss = tryClose;
+
+  press($('[data-a=back]', c), { tap: tryClose });
+  press($('[data-a=save]', c), { tap: save, hapticTap: null });
+  $$('[data-all]', c).forEach((b) => press(b, { tap: () => setAll(b.dataset.all), hapticTap: 'select' }));
+
+  entries.forEach(paint);
+  sync();
+  if (overflow) toast(`adding the first ${BATCH_MAX} — do the rest in another go`);
+
+  // cut the photos out one at a time, yielding between them so the sheet stays responsive
+  (async () => {
+    for (const e of entries) {
+      if (cancelled) return;
+      if (e.status !== 'wait') continue;
+      e.status = 'busy'; paint(e); sync();
+      await pause(40);
+      try {
+        const shot = await photoFromFile(e.file);
+        if (cancelled) return;
+        if (e.status === 'gone') continue;
+        const mask = computeMask(shot.raster, 32, []);
+        e.result = renderSticker(shot.raster, mask, { removeBg: true });
+        e.original = shot.original;
+        e.status = 'done';
+      } catch {
+        if (e.status === 'gone') continue;
+        e.status = 'fail'; failed++;
+      }
+      e.file = null;
+      paint(e); sync();
+    }
+    if (!cancelled && !live().length) {
+      cancelled = true;
+      haptic('warning'); toast('none of those photos could be read');
+      s.close();
+    }
+  })();
+}
+
 /* ------------------------------------------------------------------ outfits view */
 
-function outfitTotal(o) {
-  return o.pieces.reduce((sum, p) => sum + (Number(itemById(p.itemId)?.price) || 0), 0);
-}
 function outfitColors(o) {
   const out = [];
   for (const p of o.pieces) {
@@ -655,7 +892,7 @@ function renderOutfits() {
       <img class="thumb" src="${o.thumb || ''}" alt="" />
       <div class="strip">${cols.map((c) => `<i style="background:${c}"></i>`).join('')}</div>
       <div class="meta"><div class="name">${esc(o.name)}</div>
-      <div class="small"><span>${o.pieces.length} piece${o.pieces.length === 1 ? '' : 's'}</span><span>${money(outfitTotal(o))}</span></div></div></button>`);
+      <div class="small"><span>${o.pieces.length} piece${o.pieces.length === 1 ? '' : 's'}</span></div></div></button>`);
     press(card, { tap: () => openEditor(o), long: (e) => contextMenu(card, o.name, [
       { icon: 'edit', label: 'Open', run: () => openEditor(o) },
       { icon: 'copy', label: 'Duplicate', run: async () => {
@@ -717,7 +954,7 @@ function openEditor(outfit = null, startIds = []) {
       <button class="round dark" data-a="add" aria-label="Add pieces">${svg('plus')}</button>
       <button class="round" data-a="bg" aria-label="Board colour"><span data-bgdot style="width:22px;height:22px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--ink-3)"></span></button>
       <button class="round" data-a="shuffle" aria-label="Tidy layout">${svg('sparkle')}</button>
-      <div class="total"><small>look total</small><b data-total>${money(0)}</b></div>
+      <div class="total"><small>in this look</small><b data-total>0 pieces</b></div>
     </div>
     <div class="palette-tray">
       <div class="row"><span class="lbl">in look</span><div class="pill-strip" data-in></div></div>
@@ -768,7 +1005,7 @@ function openEditor(outfit = null, startIds = []) {
   }
   function sync() {
     $('.hint', board).style.opacity = o.pieces.length ? 0 : 1;
-    $('[data-total]', c).textContent = money(outfitTotal(o));
+    $('[data-total]', c).textContent = `${o.pieces.length} piece${o.pieces.length === 1 ? '' : 's'}`;
     syncPalette();
   }
 
@@ -1116,21 +1353,142 @@ function copyHex(col) {
 /* ------------------------------------------------------------------ tally + settings */
 
 function openTally() {
-  const t = totals();
-  const maxV = Math.max(1, ...CAT_ORDER.map((c) => t.by[c].v));
-  const priced = state.items.filter((i) => i.price);
-  const priciest = [...priced].sort((a, b) => b.price - a.price)[0];
-  const avg = priced.length ? t.v / priced.length : 0;
-  const c = h(`<div class="breakdown"><h2>the tally</h2>
-    <div class="big-total"><div class="v">${money(t.v)}</div><small>${t.n} pieces · ${priced.length} priced</small></div>
-    ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].v / maxV) * 100}%;animation-delay:${i * 80}ms;background:${['var(--sage)', 'var(--clay)', '#8fa8b0', '#b9a3c4'][i]}"></i></span><span class="amt">${money(t.by[k].v)}</span></div>`).join('')}
-    <div class="kv" style="margin-top:16px">
-      <div><small>average piece</small><b>${money(Math.round(avg))}</b></div>
-      <div><small>most treasured</small><b>${priciest ? esc(priciest.name) : '—'}</b></div>
-    </div>
-    ${state.outfits.length ? `<div class="kv"><div><small>looks</small><b>${state.outfits.length}</b></div><div><small>avg look</small><b>${money(Math.round(state.outfits.reduce((s, o) => s + outfitTotal(o), 0) / state.outfits.length))}</b></div></div>` : ''}
-  </div>`);
+  const c = h('<div class="breakdown"></div>');
+  const draw = () => {
+    const t = totals();
+    const maxN = Math.max(1, ...CAT_ORDER.map((k) => t.by[k].n));
+    const unpriced = t.n - t.priced;
+    // how often each piece appears in a look
+    const uses = new Map();
+    state.outfits.forEach((o) => new Set(o.pieces.map((p) => p.itemId)).forEach((id) => uses.set(id, (uses.get(id) || 0) + 1)));
+    const mostStyled = state.items.filter((i) => uses.get(i.id)).sort((x, y) => uses.get(y.id) - uses.get(x.id))[0];
+    const unstyled = state.items.filter((i) => !uses.get(i.id)).length;
+    // signature colour = the most common main colour
+    const colourCount = new Map();
+    state.items.forEach((i) => { const col = i.colors?.[0]; if (col) { const nm = colorName(col); const e = colourCount.get(nm) || { n: 0, col }; e.n++; colourCount.set(nm, e); } });
+    const signature = [...colourCount.entries()].sort((x, y) => y[1].n - x[1].n)[0];
+    c.innerHTML = `<h2>the tally</h2>
+      <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'} in your closet</small></div>
+      <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}. Open the price list">
+        <span class="vp-l">closet value</span><span class="vp-v">${money(t.v)}</span>
+        <span class="vp-s">${!t.n ? 'no pieces yet' : unpriced ? `${unpriced} to price` : 'all priced'}</span>${svg('back', 'class="vp-c"')}
+      </button>
+      ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 80}ms;background:${['var(--sage)', 'var(--clay)', '#8fa8b0', '#b9a3c4'][i]}"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}
+      <div class="kv" style="margin-top:16px">
+        <div><small>looks</small><b>${state.outfits.length}</b></div>
+        <div><small>not yet styled</small><b>${unstyled} piece${unstyled === 1 ? '' : 's'}</b></div>
+      </div>
+      <div class="kv">
+        <div><small>most styled</small><b>${mostStyled ? esc(mostStyled.name) : '—'}</b></div>
+        <div><small>signature colour</small><b>${signature ? `<i class="dot" style="background:${signature[1].col}"></i>${signature[0]}` : '—'}</b></div>
+      </div>`;
+    press($('[data-a=prices]', c), { tap: () => openPrices(draw), long: () => openPrices(draw), hapticTap: 'select' });
+  };
+  draw();
   sheet(c);
+}
+
+/** The one place prices are listed and edited. Unpriced pieces come first. */
+function openPrices(onClose) {
+  const cur = state.settings.currency;
+  // order is fixed when the list opens so rows don't jump while typing
+  const byNew = (x, y) => y.created - x.created;
+  const todo = state.items.filter((i) => !isPriced(i)).sort(byNew);
+  const done = state.items.filter(isPriced).sort(byNew);
+  const c = h(`<div class="prices"><h2>prices</h2>
+    <p class="sub">only you see these — type a price for any piece</p>
+    <div class="price-total"><span>total</span><b data-total></b><small data-count></small></div>
+    <div data-list></div></div>`);
+  const list = $('[data-list]', c);
+  const syncTotal = () => {
+    const t = totals();
+    $('[data-total]', c).textContent = money(t.v);
+    $('[data-count]', c).textContent = `${t.priced} of ${t.n} priced`;
+  };
+  const pending = new Map(); // item id -> save timer
+  const rows = []; // { it, inp, row } in display order
+  const commit = async (it, inp) => {
+    clearTimeout(pending.get(it.id)); pending.delete(it.id);
+    const next = parsePrice(inp.value);
+    if (next === (isPriced(it) ? Number(it.price) : null)) return;
+    it.price = next;
+    await db.put('items', it);
+    syncTotal();
+  };
+  // Scroll the sheet so the focused row sits clear of the sticky total and the on-screen keyboard.
+  let sh = null;
+  const vv = window.visualViewport;
+  const reveal = (row, inp) => {
+    if (!sh || document.activeElement !== inp) return;
+    const r = row.getBoundingClientRect();
+    const top = vv ? vv.offsetTop : 0, height = vv ? vv.height : window.innerHeight;
+    const head = $('.price-total', c).getBoundingClientRect().bottom;
+    if (r.bottom > top + height - 16 || r.top < head + 8) {
+      sh.el.scrollBy({ top: r.top + r.height / 2 - (top + height * 0.42), behavior: 'smooth' });
+    }
+  };
+  const onViewport = () => { const r = rows.find((x) => x.inp === document.activeElement); if (r) reveal(r.row, r.inp); };
+  vv?.addEventListener('resize', onViewport);
+  const section = (title, items) => {
+    if (!items.length) return;
+    list.append(h(`<div class="price-head">${title} <span>${items.length}</span></div>`));
+    items.forEach((it) => {
+      const row = h(`<div class="price-row">
+        <img src="${it.sticker}" alt="" />
+        <div class="pr-text"><div class="pr-name">${esc(it.name)}</div><div class="pr-sub">${esc(CATS[it.cat]?.label || '')}${it.sub ? ' · ' + esc(it.sub) : ''}</div></div>
+        <label class="pr-input"><span>${esc(cur)}</span><input inputmode="decimal" enterkeyhint="next" autocomplete="off" placeholder="—" aria-label="Price of ${esc(it.name)}" value="${isPriced(it) ? priceText(it.price) : ''}" /></label>
+      </div>`);
+      const inp = $('input', row);
+      rows.push({ it, inp, row });
+      inp.addEventListener('input', () => {
+        inp.value = cleanPrice(inp.value);
+        clearTimeout(pending.get(it.id));
+        pending.set(it.id, setTimeout(() => commit(it, inp), 500));
+      });
+      inp.addEventListener('focus', () => {
+        row.classList.add('focus');
+        // select() focuses the input in some browsers, so only ever select the one that still has focus
+        // (otherwise two quick focus changes would steal focus back and forth forever)
+        setTimeout(() => { if (document.activeElement === inp) inp.select(); }, 0);
+        setTimeout(() => reveal(row, inp), 350);
+      });
+      inp.addEventListener('blur', async () => {
+        row.classList.remove('focus');
+        const before = isPriced(it);
+        await commit(it, inp);
+        // tidy the display ("12." → "12")
+        inp.value = isPriced(it) ? priceText(it.price) : '';
+        if (isPriced(it) !== before) haptic(isPriced(it) ? 'success' : 'light');
+      });
+      inp.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const nxt = rows[rows.findIndex((r) => r.inp === inp) + 1];
+        if (nxt) nxt.inp.focus(); else inp.blur();
+      });
+      // long-press the piece (not the input) for quick actions
+      press($('.pr-text', row), {
+        tap: () => inp.focus(),
+        long: (e) => contextMenu(null, it.name, [
+          { icon: 'edit', label: 'Set price', run: () => inp.focus() },
+          { icon: 'undo', label: 'Clear price', run: async () => { inp.value = ''; await commit(it, inp); } },
+        ], e),
+        hapticTap: 'select',
+      });
+      list.append(row);
+    });
+  };
+  if (!state.items.length) list.append(h('<p class="pr-empty">add a piece to your closet and it will show up here</p>'));
+  section('to price', todo);
+  section('priced', done);
+  syncTotal();
+  sh = sheet(c, { onClose: () => {
+    vv?.removeEventListener('resize', onViewport);
+    // save whatever was typed last, even if its box still has focus or its debounce hasn't fired
+    rows.forEach(({ it, inp }) => { commit(it, inp); });
+    if (list.contains(document.activeElement)) document.activeElement.blur();
+    onClose?.();
+  } });
 }
 
 function openSettings() {
@@ -1199,26 +1557,35 @@ function bindChrome() {
       : (e) => contextMenu(t, 'palette', INSPIRATION.slice(0, 5).map((p) => ({ icon: 'swatch', label: p.name, run: () => { state.paletteBase = p.colors[2]; if (state.view !== 'palette') setView('palette'); else renderPalette(); } })), e),
     hapticTap: 'select',
   }));
-  press($('#tally-tab'), { tap: openTally, long: openTally, hapticTap: 'select' });
+  press($('#tally-tab'), { tap: openTally, long: () => openPrices(), hapticTap: 'select' });
   const fab = $('#fab');
   press(fab, {
     tap: () => (state.view === 'outfits' ? openEditor() : openAdd()),
     long: (e) => contextMenu(fab, 'create', [
       { icon: 'camera', label: 'Take a photo', run: () => quickPick('camera') },
-      { icon: 'image', label: 'Choose from library', run: () => quickPick('library') },
+      { icon: 'image', label: 'Choose photos', run: () => quickPick('library') },
       { icon: 'look', label: 'New look', run: () => openEditor() },
       { icon: 'sparkle', label: 'Surprise me', run: surpriseLook },
     ], e),
     hapticTap: 'medium',
   });
   press($('#settings-btn'), { tap: openSettings, long: openTally });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && stack.length) stack[stack.length - 1].close(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !stack.length) return;
+    const top = stack[stack.length - 1];
+    (top.dismiss || top.close)(); // a sheet can ask before it closes (the batch sheet does)
+  });
 }
 
 function quickPick(kind) {
   const input = kind === 'camera' ? $('#file-camera') : $('#file-library');
   input.value = '';
-  input.onchange = () => { const f = input.files?.[0]; if (f) openAdd({ source: f }); };
+  if (kind === 'library') input.multiple = true;
+  input.onchange = () => {
+    const files = [...(input.files || [])];
+    if (files.length > 1) openBatch(files, state.filterCat !== 'all' ? state.filterCat : null);
+    else if (files[0]) openAdd({ source: files[0] });
+  };
   input.click();
 }
 

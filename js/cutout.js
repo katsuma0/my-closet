@@ -29,6 +29,8 @@ export function rasterize(img, maxSide = MAX_SIDE) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const ctx = c.getContext('2d', { willReadFrequently: true });
+  // transparent PNGs (ready-made cut-outs) are treated as sitting on white
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
   ctx.drawImage(img, 0, 0, w, h);
   return ctx.getImageData(0, 0, w, h);
 }

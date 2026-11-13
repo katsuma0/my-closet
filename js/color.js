@@ -84,12 +84,21 @@ const NAMED = [
   ['Forest', '#2c4a35'], ['Mint', '#b6dcc5'], ['Teal', '#2b7a78'], ['Sky', '#9cc3e0'], ['Denim', '#4f6d8f'],
   ['Blue', '#2f5fa8'], ['Navy', '#1f2b4a'], ['Lavender', '#b9a3d4'], ['Purple', '#6c3f8f'], ['Plum', '#5a2d47'],
 ];
+// CIE Lab, so a muted green reads as "Sage" rather than the nearest grey.
+function hexToLab(hex) {
+  const [r, g, b] = hexToRgb(hex).map((v) => { v /= 255; return v > 0.04045 ? ((v + 0.055) / 1.055) ** 2.4 : v / 12.92; });
+  const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+  const x = f((r * 0.4124 + g * 0.3576 + b * 0.1805) / 0.95047);
+  const y = f(r * 0.2126 + g * 0.7152 + b * 0.0722);
+  const z = f((r * 0.0193 + g * 0.1192 + b * 0.9505) / 1.08883);
+  return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+}
+const NAMED_LAB = NAMED.map(([n, h]) => [n, hexToLab(h)]);
 export function colorName(hex) {
-  const [r, g, b] = hexToRgb(hex);
+  const [L, A, B] = hexToLab(hex);
   let best = NAMED[0][0], bd = Infinity;
-  for (const [n, h] of NAMED) {
-    const [R, G, B] = hexToRgb(h);
-    const d = (r - R) ** 2 * 0.3 + (g - G) ** 2 * 0.59 + (b - B) ** 2 * 0.11;
+  for (const [n, [l, a, b]] of NAMED_LAB) {
+    const d = (L - l) ** 2 + (A - a) ** 2 + (B - b) ** 2;
     if (d < bd) { bd = d; best = n; }
   }
   return best;
