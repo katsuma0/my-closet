@@ -321,10 +321,11 @@ function fitLighting(Yc, Y, R, B, W, H) {
         if (k === 0 ? gx === 0 : k === 1 ? gx === gw - 1 : (q < 0 || q >= gn)) continue;
         const dv = cY[q] - v;
         if (seen[q] || dv >= limUp || dv <= limDn) continue;
-        // Accept what matches the model; what climbs smoothly above it (a hot spot - shadows and
-        // garments only ever lead down from the bare background, or up with a jump); and, along the
-        // frame itself, anything that changes as gently as lighting does.
-        if (like(q) || (cast(q) && ((cY[q] >= v * 0.995 && cY[q] > mY[q]) || (ring[q] && ring[g] && Math.abs(cY[q] - v) < 0.035 * v)))) { seen[q] = 1; queue[qt++] = q; }
+        // Accept what matches the model and, along the frame itself, anything that changes as gently
+        // as lighting does. Brighter areas are NOT followed step by step: the soft edge of a white
+        // garment on a grey sheet climbs just as smoothly as a lighting hot spot, and following it
+        // swallowed the whole garment. Real hot spots are picked up by the refit in the next round.
+        if (like(q) || (cast(q) && ring[q] && ring[g] && Math.abs(cY[q] - v) < 0.035 * v)) { seen[q] = 1; queue[qt++] = q; }
       }
     }
     if (qt < 24 || (round >= 2 && qt <= grown * 1.02)) break;

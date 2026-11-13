@@ -29,7 +29,6 @@ const ICON = {
   copy: '<rect x="8" y="8" width="12" height="12" rx="3"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
   image: '<rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 4 3.5 3-2.5 4 3.5"/>',
-  palette: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.8 0-1-.9-1.4-.9-2.4 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/>',
   look: '<rect x="3.5" y="3.5" width="7" height="9" rx="2"/><rect x="13.5" y="3.5" width="7" height="5" rx="2"/><rect x="13.5" y="11.5" width="7" height="9" rx="2"/><rect x="3.5" y="15.5" width="7" height="5" rx="2"/>',
   back: '<path d="M15 5l-7 7 7 7"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
@@ -144,13 +143,13 @@ function sheet(content, { full = false, onClose } = {}) {
     },
   };
   if (!full) {
-    scrim.addEventListener('click', () => api.close());
+    scrim.addEventListener('click', () => (api.dismiss || api.close)());
     // let go: far enough or fast enough puts the sheet away, otherwise it springs back
     const settle = (dy, v = 0) => {
       el.style.transition = '';
       scrim.style.opacity = '';
+      el.style.transform = ''; // spring back first: a sheet that asks before closing may stay open
       if (dy > Math.min(150, el.offsetHeight * 0.3) || (dy > 24 && v > 0.5)) { haptic('light'); (api.dismiss || api.close)(); }
-      else el.style.transform = '';
     };
     const follow = (dy) => {
       el.style.transform = `translateY(${dy}px)`;
@@ -160,10 +159,12 @@ function sheet(content, { full = false, onClose } = {}) {
     // touch: swipe down anywhere on the sheet while its content is scrolled to the top
     let t0 = null;
     el.addEventListener('touchstart', (e) => {
+      if (t0 && t0.on) return; // a second finger must not strand a drag that is under way
       t0 = null;
-      if (closed || e.touches.length !== 1 || e.target.closest('input[type=range], .slider-row')) return;
+      // not from the strength slider, and not from the photo while it is being tapped to erase
+      if (closed || e.touches.length !== 1 || e.target.closest('input[type=range], .slider-row, .stage.erasing')) return;
       const t = e.touches[0];
-      t0 = { x: t.clientX, y: t.clientY, on: false, d: 0, v: 0, lastY: t.clientY, lastT: performance.now() };
+      t0 = { x: t.clientX, y: t.clientY, on: false, d: 0, v: 0, lastY: t.clientY, lastT: performance.now(), t: performance.now() };
     }, { passive: true });
     el.addEventListener('touchmove', (e) => {
       if (!t0) return;
@@ -183,8 +184,9 @@ function sheet(content, { full = false, onClose } = {}) {
     }, { passive: false });
     const touchEnd = () => {
       if (!t0) return;
-      const { on, d, v } = t0; t0 = null;
-      if (on) settle(d, v);
+      const { on, d, v, t } = t0; t0 = null;
+      // speed of the last stretch, or of the whole gesture when it was a short flick
+      if (on) settle(d, Math.max(v, d / Math.max(1, performance.now() - t)));
     };
     el.addEventListener('touchend', touchEnd);
     el.addEventListener('touchcancel', touchEnd);
@@ -525,7 +527,7 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
   range.addEventListener('input', () => {
     cut.tolerance = +range.value;
     if (Math.abs(cut.tolerance - lastTick) >= 5) { haptic('light'); lastTick = cut.tolerance; }
-    clearTimeout(timer); timer = setTimeout(process, 140);
+    clearTimeout(timer); timer = setTimeout(() => { timer = null; process(); }, 140);
   });
   stage.addEventListener('click', (e) => {
     if (!erasing || !cut.removeBg) return;
@@ -540,7 +542,13 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
   });
   syncTools();
   show();
-  return { process, show };
+  return {
+    process, show,
+    pending: () => timer !== null,
+    cancel: () => { clearTimeout(timer); timer = null; },
+    // run a re-cut that is still waiting on the slider, so what is saved matches what is set
+    settle: async () => { if (timer !== null) { clearTimeout(timer); timer = null; await process(); } },
+  };
 }
 
 /* ------------------------------------------------------------------ add / edit flow */
@@ -563,11 +571,19 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   };
 
   const c = h(`<div>
-    <div class="sheet-head"><h2>${item ? 'Edit Piece' : 'New Piece'}</h2></div>
+    <div class="sheet-head"><h2>${item ? 'Edit piece' : 'New piece'}</h2></div>
     <div data-step="photo"></div>
     <div data-step="details"></div>
   </div>`);
   const s = sheet(c);
+  // swipe, scrim tap and Escape all ask first once there is a photo or a change to lose
+  const sig = () => JSON.stringify([st.original === (item?.original || null), st.cat, st.sub, st.name, st.price, st.tolerance, st.removeBg, st.seeds]);
+  const clean = sig();
+  s.dismiss = async () => {
+    if (sig() !== clean && !(await confirmSheet(item ? 'Discard changes?' : 'Discard this piece?', '', 'Discard'))) return;
+    s.close();
+  };
+  let editor = null;
 
   const photo = $('[data-step=photo]', c);
   const details = $('[data-step=details]', c);
@@ -627,7 +643,8 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       { icon: 'camera', label: 'Take photo', run: () => pickFile('camera') },
       { icon: 'image', label: 'Choose photo', run: () => pickFile('library') },
     ], e) });
-    return mountCutout(photo, st, { onChange: syncSwatches, extraTools: [re] });
+    editor = mountCutout(photo, st, { onChange: syncSwatches, extraTools: [re] });
+    return editor;
   }
 
   function renderDetails() {
@@ -696,6 +713,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   }
 
   async function save() {
+    await editor?.settle();
     if (!st.result) { haptic('warning'); toast('Add a photo first'); return; }
     const colors = mainColors(st.result);
     const rec = {
@@ -746,7 +764,7 @@ function openBatch(files, presetCat = null) {
     file, status: 'wait', cat: presetCat, result: null, original: null, el: null, shown: null, redo: false,
     cut: { tolerance: DEFAULT_TOLERANCE, seeds: [], removeBg: true },
   }));
-  let failed = 0, cancelled = false, saving = false, pumping = false;
+  let failed = 0, cancelled = false, saving = false, pumping = false, tuning = false;
 
   const c = h(`<div class="batch">
     <div class="editor-top">
@@ -808,7 +826,7 @@ function openBatch(files, presetCat = null) {
     const done = l.filter((e) => e.status === 'done').length, cutting = l.length - done;
     const missing = l.filter((e) => !e.cat).length;
     const pieces = `${l.length} piece${l.length === 1 ? '' : 's'}`;
-    $('[data-title]', c).textContent = `Add ${pieces}`;
+    $('[data-title]', c).textContent = 'New pieces';
     $('[data-bar]', c).style.width = `${l.length ? (done / l.length) * 100 : 100}%`;
     const notes = [];
     if (failed) notes.push(`${failed} unreadable`);
@@ -843,30 +861,42 @@ function openBatch(files, presetCat = null) {
 
   // The same cut-out editor as the one-piece form, for one photo of the batch.
   async function tune(e) {
-    if (saving) return;
+    if (saving || tuning) return;
     if (e.status !== 'done') { toast('Still cutting out'); return; }
+    tuning = true; // one editor at a time, also while the photo is being reopened
     let raster;
-    try { raster = rasterize(await loadImage(e.original), 900); } catch { toast('Photo could not be opened'); return; }
-    if (e.status !== 'done' || saving) return;
+    try { raster = rasterize(await loadImage(e.original), 900); } catch { tuning = false; toast('Photo could not be opened'); return; }
+    if (e.status !== 'done' || saving) { tuning = false; return; }
     const cut = { raster, tolerance: e.cut.tolerance, seeds: [...e.cut.seeds], removeBg: e.cut.removeBg, result: e.result };
-    let changed = false;
-    const t = h(`<div class="tuner"><h2>Fix Cut-out</h2>
+    let changed = false, ed = null;
+    const t = h(`<div class="tuner"><h2>Fix cut-out</h2>
       <div data-ed></div>
       <div class="row-btns">${live().length > 1 ? '<button class="btn soft" data-a="all">Use for all</button>' : ''}<button class="btn sage" data-a="ok">Done</button></div>
     </div>`);
     const ts = sheet(t, { onClose: () => {
-      if (!changed || e.status !== 'done') return;
+      tuning = false;
+      if (e.status !== 'done') return;
+      if (ed.pending()) {
+        // the slider moved but its re-cut had not run yet: cut this photo again with the new settings
+        ed.cancel();
+        e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg };
+        e.status = 'wait'; paint(e); sync(); pump();
+        return;
+      }
+      if (!changed) return;
       e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg };
       e.result = cut.result;
       paint(e); sync();
     } });
+    ed = mountCutout($('[data-ed]', t), cut, { onChange: () => { changed = true; } });
     mountCutout($('[data-ed]', t), cut, { onChange: () => { changed = true; } });
-    press($('[data-a=ok]', t), { tap: () => ts.close() });
+    press($('[data-a=ok]', t), { tap: async () => { await ed.settle(); ts.close(); } });
     const all = $('[data-a=all]', t);
     if (all) press(all, { tap: () => {
       // same strength (and background on/off) for every photo; each keeps its own erase marks
       const tol = cut.tolerance, rb = cut.removeBg;
       changed = false; // everything, this photo included, is cut again below
+      ed.cancel();
       e.cut = { tolerance: tol, seeds: cut.seeds, removeBg: rb };
       ts.close();
       live().forEach((x) => {
@@ -956,6 +986,7 @@ function openBatch(files, presetCat = null) {
         if (!e) break;
         e.status = 'busy'; paint(e); sync();
         await pause(40);
+        if (e.status === 'gone') continue; // removed while waiting
         try {
           let raster;
           if (e.file) {
@@ -1031,9 +1062,6 @@ function renderOutfits() {
     grid.append(card);
   });
   root.append(grid);
-  if (!state.outfits.length) {
-    root.append(h('<div class="empty" style="padding-top:44px"><p>No looks yet</p></div>'));
-  }
 }
 
 function surpriseLook() {
@@ -1249,23 +1277,17 @@ function openEditor(outfit = null, startIds = []) {
     const cols = outfitColors(o);
     inEl.innerHTML = '';
     (cols.length ? cols : ['#e9e4d8']).forEach((col) => inEl.append(swatchBtn(col, !cols.length)));
+    $('[data-note]', c).textContent = '';
   }
   function swatchBtn(col, placeholder = false) {
     const b = h(`<button style="background:${col}" aria-label="${colorName(col)}"></button>`);
     if (placeholder) return b;
-    press(b, {
-      tap: () => {
-        const n = state.items.filter((i) => mainColors(i).some((x) => closeness(x, col) > 0.72)).length;
-        $('[data-note]', c).textContent = `${colorName(col)}${n ? `, ${n} piece${n === 1 ? '' : 's'}` : ''}`;
-      },
-      long: () => openPicker(col),
-      hapticTap: 'select',
-    });
+    press(b, { tap: () => { $('[data-note]', c).textContent = colorName(col); }, hapticTap: 'select' });
     return b;
   }
 
   // ----- toolbar
-  press($('[data-a=add]', c), { tap: () => openPicker(), long: (e) => contextMenu($('[data-a=add]', c), 'Add', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => openPicker(null, k) })), e) });
+  press($('[data-a=add]', c), { tap: () => openPicker(), long: (e) => contextMenu($('[data-a=add]', c), 'Add', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => openPicker(k) })), e) });
   const bgBtn = $('[data-a=bg]', c);
   press(bgBtn, {
     tap: () => { o.board = BOARD_COLORS[(BOARD_COLORS.indexOf(o.board) + 1) % BOARD_COLORS.length]; paintBoard(); dirty = true; },
@@ -1307,11 +1329,11 @@ function openEditor(outfit = null, startIds = []) {
   } });
 
   // ----- piece picker
-  function openPicker(matchColor = null, onlyCat = null) {
+  function openPicker(onlyCat = null) {
     let cat = onlyCat || 'all';
-    const pc = h(`<div><h2>${matchColor ? `<span class="sw" style="display:inline-block;width:20px;height:20px;vertical-align:-1px;margin-right:10px;background:${matchColor}"></span>${colorName(matchColor)}` : 'Add Pieces'}</h2>
+    const pc = h(`<div><h2>Add pieces</h2>
       <div class="chips" data-c></div><div class="picker-grid" data-g></div></div>`);
-    const ps = sheet(pc);
+    sheet(pc);
     const draw = () => {
       const chipsEl = $('[data-c]', pc); chipsEl.innerHTML = '';
       ['all', ...CAT_ORDER].forEach((k) => {
@@ -1321,7 +1343,6 @@ function openEditor(outfit = null, startIds = []) {
       });
       const g = $('[data-g]', pc); g.innerHTML = '';
       let list = state.items.filter((i) => cat === 'all' || i.cat === cat);
-      if (matchColor) list = list.map((i) => [i, Math.max(0, ...(i.colors || []).map((x) => closeness(x, matchColor)))]).filter(([, s]) => s > 0.55).sort((a, b) => b[1] - a[1]).map(([i]) => i);
       if (!list.length) g.append(h(`<p style="grid-column:1/-1;color:var(--ink-3);text-align:center;padding:30px 0">${state.items.length ? 'No pieces' : 'Your closet is empty'}</p>`));
       list.forEach((it, idx) => {
         const inLook = o.pieces.some((p) => p.itemId === it.id);
@@ -1334,7 +1355,6 @@ function openEditor(outfit = null, startIds = []) {
           },
           long: (e) => contextMenu(b, it.name, [
             { icon: 'plus', label: 'Add another', run: () => { addPiece(it.id); b.classList.add('in'); } },
-            { icon: 'palette', label: 'Same colour', run: () => { ps.close(); setTimeout(() => openPicker(it.colors?.[0]), 300); } },
           ], e),
           hapticTap: 'select',
         });
@@ -1348,7 +1368,7 @@ function openEditor(outfit = null, startIds = []) {
     refreshAll();
     startIds.forEach((id) => addPiece(id));
     if (startIds.length) select(null);
-    if (!o.pieces.length && state.items.length) setTimeout(() => openPicker(null, state.filterCat !== 'all' ? state.filterCat : null), 500);
+    if (!o.pieces.length && state.items.length) setTimeout(() => openPicker(state.filterCat !== 'all' ? state.filterCat : null), 500);
   });
   const onResize = () => o.pieces.forEach(place);
   window.addEventListener('resize', onResize);
@@ -1585,7 +1605,7 @@ async function load() {
 function bindChrome() {
   $$('.tab[data-view]').forEach((t) => press(t, {
     tap: () => setView(t.dataset.view),
-    long: t.dataset.view === 'closet' ? (e) => contextMenu(t, 'Closet', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => { state.filterCat = k; state.filterSub = null; if (state.view !== 'closet') setView('closet'); else renderCloset(); } })), e)
+    long: t.dataset.view === 'closet' ? (e) => contextMenu(t, 'Pieces', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => { state.filterCat = k; state.filterSub = null; if (state.view !== 'closet') setView('closet'); else renderCloset(); } })), e)
       : (e) => contextMenu(t, 'Looks', [
         { icon: 'plus', label: 'New look', run: () => openEditor() },
         { icon: 'sparkle', label: 'Surprise me', run: surpriseLook },
