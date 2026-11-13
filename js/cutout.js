@@ -3,6 +3,9 @@
 
 const MAX_SIDE = 900;
 
+/** The strength used automatically for every photo (the slider runs 6..110). */
+export const DEFAULT_TOLERANCE = 32;
+
 export function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();

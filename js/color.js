@@ -1,12 +1,9 @@
-// Color helpers + harmony suggestions.
+// Colour helpers: naming a colour and comparing two.
 
 export function hexToRgb(hex) {
   const h = hex.replace('#', '');
   const n = parseInt(h.length === 3 ? h.split('').map((c) => c + c).join('') : h, 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-}
-export function rgbToHex(r, g, b) {
-  return '#' + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
 }
 export function hexToHsl(hex) {
   let [r, g, b] = hexToRgb(hex).map((v) => v / 255);
@@ -22,59 +19,6 @@ export function hexToHsl(hex) {
   }
   return [h, s * 100, l * 100];
 }
-export function hslToHex(h, s, l) {
-  h = ((h % 360) + 360) % 360; s /= 100; l /= 100;
-  const k = (n) => (n + h / 30) % 12;
-  const a = s * Math.min(l, 1 - l);
-  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
-  return rgbToHex(f(0) * 255, f(8) * 255, f(4) * 255);
-}
-
-export function isNeutral(hex) {
-  const [, s, l] = hexToHsl(hex);
-  return s < 14 || l < 12 || l > 92;
-}
-
-export function textOn(hex) {
-  const [r, g, b] = hexToRgb(hex);
-  return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? '#3b3631' : '#fbf9f6';
-}
-
-// Softened so suggestions stay wearable and calm.
-function soften([h, s, l]) {
-  return [h, Math.min(s, 42), Math.max(30, Math.min(l, 76))];
-}
-
-export function harmonies(hex) {
-  const base = hexToHsl(hex);
-  const [h, s, l] = soften(base);
-  const neutral = isNeutral(hex);
-  const mk = (dh, ds = 0, dl = 0) => hslToHex(h + dh, Math.max(0, s + ds), Math.max(8, Math.min(94, l + dl)));
-  const groups = [
-    { name: 'Complementary', hint: 'Opposites that make each other glow', colors: [hex, mk(180), mk(180, -15, 18), mk(0, -20, 25)] },
-    { name: 'Analogous', hint: 'Neighbours on the wheel — soft & effortless', colors: [mk(-30), hex, mk(30), mk(15, -10, 15)] },
-    { name: 'Triadic', hint: 'Balanced and playful', colors: [hex, mk(120), mk(240), mk(120, -20, 20)] },
-    { name: 'Tonal', hint: 'One hue, many moods — very refined', colors: [mk(0, -10, -22), mk(0, -5, -10), hex, mk(0, -10, 14), mk(0, -20, 26)] },
-    { name: 'Neutral grounding', hint: 'Always works: earthy basics', colors: [hex, '#f2ede4', '#c8bba8', '#6f6558', '#2f2c29'] },
-  ];
-  if (neutral) {
-    groups.unshift({ name: 'Neutral base', hint: 'Neutrals pair with almost anything — add one accent', colors: [hex, '#a3b18a', '#c98e6b', '#7d93a8', '#b9a3c4'] });
-  }
-  return groups;
-}
-
-// Curated calm palettes for inspiration.
-export const INSPIRATION = [
-  { name: 'Sage morning', colors: ['#e9e4d8', '#c9cfb6', '#a3b18a', '#6b7a5a', '#3c4237'] },
-  { name: 'Clay & linen', colors: ['#f3ece2', '#e2cdb5', '#c98e6b', '#8c5a43', '#3d2f2a'] },
-  { name: 'Coastal mist', colors: ['#eef1f0', '#c6d4d6', '#8fa8b0', '#4f6b78', '#26343b'] },
-  { name: 'Lavender dusk', colors: ['#f2eef3', '#d9cde0', '#b9a3c4', '#7e6b8f', '#3a3240'] },
-  { name: 'Oat & espresso', colors: ['#f6f1e7', '#e5d9c3', '#bfa98a', '#7a6650', '#2e2620'] },
-  { name: 'Matcha latte', colors: ['#f4f2e8', '#dfe3c7', '#b7c08f', '#7f8a58', '#4a4a3a'] },
-  { name: 'Rose quartz', colors: ['#faf1ef', '#efd6d1', '#d9a9a0', '#a8726b', '#4b3433'] },
-  { name: 'Monochrome calm', colors: ['#fafaf8', '#dcdad6', '#a8a5a0', '#5e5b57', '#22211f'] },
-];
-
 const NAMED = [
   ['Black', '#1c1c1c'], ['Charcoal', '#3d3d3d'], ['Grey', '#8a8a8a'], ['Silver', '#c4c4c4'], ['White', '#f7f7f5'],
   ['Cream', '#f1e9d8'], ['Beige', '#d9c7a7'], ['Camel', '#c19a6b'], ['Tan', '#b48a64'], ['Brown', '#6b4a33'],

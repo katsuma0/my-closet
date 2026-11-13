@@ -321,6 +321,7 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
   transition: transform .35s var(--spring);
 }
 .sw:active { transform: scale(.9); }
+.sw-names { align-self: center; font-size: 13px; color: var(--ink-2); margin-left: 4px; }
 
 /* ---------- batch add ---------- */
 .batch { display: flex; flex-direction: column; min-height: 100%; }
@@ -339,14 +340,25 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
   animation: pieceIn .5s var(--ease) both;
 }
 .b-thumb {
-  width: 72px; height: 72px; flex: none; border-radius: 16px; display: grid; place-items: center; padding: 4px;
+  position: relative; width: 72px; height: 72px; flex: none; border-radius: 16px; display: grid; place-items: center; padding: 4px;
   background-color: var(--board);
   background-image: radial-gradient(color-mix(in srgb, var(--ink) 10%, transparent) 1px, transparent 1.2px);
   background-size: 12px 12px;
 }
-.b-thumb img { max-width: 100%; max-height: 64px; object-fit: contain; animation: stickerIn .6s var(--spring); }
-.b-thumb .spinner { width: 22px; height: 22px; opacity: 0; transition: opacity .3s; }
+.b-thumb img { max-width: 100%; max-height: 64px; object-fit: contain; animation: stickerIn .6s var(--spring); transition: opacity .3s; }
+.b-thumb .spinner { position: absolute; inset: 0; margin: auto; width: 22px; height: 22px; opacity: 0; transition: opacity .3s; }
 .batch-row.busy .b-thumb .spinner { opacity: 1; }
+.batch-row.busy .b-thumb img { opacity: .3; }
+/* little badge: this photo's cut-out can be fixed */
+.b-tune {
+  position: absolute; right: -5px; bottom: -5px; width: 24px; height: 24px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--card); color: var(--ink-2); box-shadow: var(--shadow-sm), 0 0 0 1px var(--line);
+  transform: scale(0); transition: transform .4s var(--spring);
+}
+.b-tune svg { width: 13px; height: 13px; stroke-width: 2; }
+.batch-row.ready .b-tune { transform: scale(1); }
+.tuner .stage { min-height: 200px; margin-top: 4px; }
+.tuner .stage img, .tuner .stage canvas { max-height: 38vh; }
 .b-main { flex: 1; min-width: 0; }
 .b-cats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; background: var(--bg-2); padding: 4px; border-radius: 14px; }
 .b-cats button { height: 44px; border-radius: 11px; display: grid; place-items: center; color: var(--ink-2); transition: background .35s var(--ease), color .35s; }
@@ -427,7 +439,6 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
 .palette-tray { background: var(--card); border-radius: 22px; padding: 12px 14px; box-shadow: var(--shadow-sm); }
 .palette-tray .row { display: flex; align-items: center; gap: 10px; }
 .palette-tray .lbl { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); width: 64px; flex: none; }
-.palette-tray .row + .row { margin-top: 10px; }
 .pill-strip { display: flex; flex: 1; height: 34px; border-radius: 12px; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(0,0,0,.05); }
 .pill-strip button { flex: 1; transition: flex .5s var(--ease); position: relative; }
 .pill-strip button:hover, .pill-strip button:active { flex: 1.6; }
@@ -441,26 +452,6 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
 .pick-item .on { position: absolute; top: 6px; right: 6px; width: 20px; height: 20px; border-radius: 50%; background: var(--sage); color: #fff; display: grid; place-items: center; transform: scale(0); transition: transform .4s var(--spring); }
 .pick-item .on svg { width: 12px; height: 12px; stroke-width: 2.4; }
 .pick-item.in .on { transform: scale(1); }
-
-/* ---------- palette view ---------- */
-.card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow-sm); padding: 18px; margin-bottom: 14px; animation: pieceIn .6s var(--ease) both; }
-.card h3 { margin: 0 0 2px; font: italic 500 22px var(--serif); }
-.card .hint { margin: 0 0 12px; font-size: 13px; color: var(--ink-2); }
-.base-row { display: flex; align-items: center; gap: 14px; }
-.base-swatch { width: 74px; height: 74px; border-radius: 22px; position: relative; overflow: hidden; box-shadow: var(--shadow-sm), inset 0 0 0 1px rgba(0,0,0,.06); flex: none; transition: background .5s var(--ease); }
-.base-swatch input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
-.base-name { font: italic 500 26px var(--serif); }
-.base-hex { font-size: 13px; color: var(--ink-3); letter-spacing: .06em; }
-.harmony { display: flex; height: 64px; border-radius: 16px; overflow: hidden; }
-.harmony button { flex: 1; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 6px; font-size: 10px; letter-spacing: .05em; opacity: 1; transition: flex .5s var(--ease); }
-.harmony button span { opacity: 0; transition: opacity .3s; }
-.harmony button:hover, .harmony button:active { flex: 1.7; }
-.harmony button:hover span, .harmony button:active span { opacity: .85; }
-.matches { display: flex; gap: 8px; margin-top: 10px; overflow-x: auto; scrollbar-width: none; }
-.matches img { height: 54px; width: 54px; object-fit: contain; background: var(--bg); border-radius: 12px; padding: 4px; flex: none; animation: pieceIn .5s var(--ease) both; }
-.closet-colors { display: flex; flex-wrap: wrap; gap: 8px; }
-.closet-colors .sw { width: 34px; height: 34px; }
-.closet-colors .sw.active { transform: scale(1.15); box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--ink); }
 
 /* ---------- detail ---------- */
 .detail-img { display: grid; place-items: center; padding: 10px 0 18px; }
