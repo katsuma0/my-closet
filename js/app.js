@@ -1,5 +1,5 @@
 import { db, uid } from './db.js';
-import { haptic, setHaptics, hapticsEnabled } from './haptics.js';
+import { haptic } from './haptics.js';
 import { loadImage, rasterize, computeMask, renderSticker, renderMaskPreview, DEFAULT_TOLERANCE } from './cutout.js';
 import { colorName, closeness } from './color.js';
 
@@ -12,7 +12,7 @@ const CATS = {
   acc: { label: 'Accessories', subs: ['Bags', 'Hats', 'Jewelry', 'Belts', 'Scarves', 'Sunglasses', 'Watches'] },
 };
 const CAT_ORDER = ['top', 'bottom', 'shoes', 'acc'];
-const BOARD = [['Mist', '#f6f6f5'], ['White', '#ffffff'], ['Ivory', '#f1ede6'], ['Sand', '#e6dfd3'], ['Stone', '#d3ccc0'], ['Night', '#1d1d1b']];
+const BOARD = [['Linen', '#fdfcfa'], ['Sand', '#efe9df'], ['Sage', '#e9ede3'], ['Blush', '#f3e9e4'], ['Fog', '#e6ebee'], ['Night', '#2f2b27']];
 const BOARD_COLORS = BOARD.map((b) => b[1]);
 
 const ICON = {
@@ -48,7 +48,6 @@ const svg = (name, extra = '') => `<svg viewBox="0 0 24 24" ${extra}>${ICON[name
 const state = {
   items: [],
   outfits: [],
-  settings: { currency: '$', haptics: true },
   view: 'closet',
   filterCat: 'all',
   filterSub: null,
@@ -61,7 +60,7 @@ const esc = (s = '') => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<
 const money = (n) => {
   const v = Number(n) || 0;
   const s = v % 1 === 0 ? v.toLocaleString() : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return state.settings.currency + s;
+  return '$' + s;
 };
 const itemById = (id) => state.items.find((i) => i.id === id);
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -408,9 +407,7 @@ function renderCloset() {
   items.forEach((it, idx) => {
     const card = h(`<button class="piece" style="animation-delay:${Math.min(idx, 12) * 35}ms">
       <span class="tile"><img class="sticker" src="${it.sticker}" alt="" loading="lazy" /></span>
-      <span class="name">${esc(it.name)}</span>
-      <span class="kind">${esc(it.sub || CATS[it.cat]?.label || '')}</span>
-      <span class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</span></button>`);
+      <span class="meta"><span class="name">${esc(it.name)}</span><span class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>`);
     press(card, { tap: () => openDetail(it), long: (e) => itemMenu(it, card, e) });
     grid.append(card);
   });
@@ -448,8 +445,7 @@ function openDetail(it) {
   const c = h(`<div>
     <div class="detail-img"><img src="${it.sticker}" alt="" /></div>
     <h2>${esc(it.name)}</h2>
-    <p class="sub kind">${esc(it.sub || CATS[it.cat]?.label || '')}</p>
-    ${cols.length ? `<div class="field"><div class="swatches">${cols.map((x) => `<span class="sw" style="background:${x}"></span>`).join('')}<span class="sw-names">${cols.map(colorName).join(', ')}</span></div></div>` : ''}
+    <div class="detail-meta"><span>${esc(it.sub || CATS[it.cat]?.label || '')}</span><span class="dots">${cols.map((x) => `<i style="background:${x}"></i>`).join('')}</span><span>${cols.map(colorName).join(', ')}</span></div>
     <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="edit">Edit</button><button class="btn" data-a="look">Style</button></div>
     <button class="btn ghost block" data-a="del">Delete</button>
   </div>`);
@@ -474,11 +470,11 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
   let mask = null, erasing = false, timer = null, run = 0;
   const el = h(`<div><div class="stage"><div class="busy"><div class="spinner"></div></div></div>
     <div class="stage-tools">
-      <button class="chip" data-a="bg"><span class="switch ${cut.removeBg ? 'on' : ''}" style="transform:scale(.7);margin:-6px -4px"></span>remove background</button>
-      <button class="chip" data-a="erase">${svg('eraser')} tap to erase</button>
-      <button class="chip" data-a="undo">${svg('undo')} undo</button>
+      <button class="chip" data-a="bg"><span class="switch ${cut.removeBg ? 'on' : ''}" style="transform:scale(.7);margin:-6px -4px"></span>Remove background</button>
+      <button class="chip" data-a="erase">${svg('eraser')} Tap to erase</button>
+      <button class="chip" data-a="undo">${svg('undo')} Undo</button>
     </div>
-    <div class="slider-row" data-a="tol-row"><span>gentle</span><input type="range" min="${TOL_MIN}" max="${TOL_MAX}" value="${Math.min(TOL_MAX, Math.max(TOL_MIN, cut.tolerance))}" aria-label="Background removal strength" /><span>strong</span></div></div>`);
+    <div class="slider-row" data-a="tol-row"><span>Gentle</span><input type="range" min="${TOL_MIN}" max="${TOL_MAX}" value="${Math.min(TOL_MAX, Math.max(TOL_MIN, cut.tolerance))}" aria-label="Background removal strength" /><span>Strong</span></div></div>`);
   host.innerHTML = '';
   host.append(el);
   extraTools.forEach((t) => $('.stage-tools', el).append(t));
@@ -638,7 +634,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   }
 
   function renderStage() {
-    const re = h(`<button class="chip" data-a="re">${svg('image')} new photo</button>`);
+    const re = h(`<button class="chip" data-a="re">${svg('image')} New photo</button>`);
     press(re, { tap: () => pickFile('library'), long: (e) => contextMenu(re, 'New photo', [
       { icon: 'camera', label: 'Take photo', run: () => pickFile('camera') },
       { icon: 'image', label: 'Choose photo', run: () => pickFile('library') },
@@ -653,8 +649,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       <div class="field"><label>Category</label><div class="seg">${CAT_ORDER.map((k) => `<button data-cat="${k}" class="${st.cat === k ? 'active' : ''}">${svg(k)}${CATS[k].label}</button>`).join('')}</div></div>
       <div class="field"><label>Type</label><div class="wrap-chips" data-subs></div></div>
       <div class="field"><label>Name</label><input class="input" data-name placeholder="Name" value="${esc(st.name)}" maxlength="40" /></div>
-      ${item ? '' : `<div class="field"><label>Price (optional)</label><div class="price-wrap"><span>${esc(state.settings.currency)}</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
-      <div class="field"><label>Colours</label><div class="swatches" data-sw></div></div>
+      ${item ? '' : `<div class="field"><label>Price (optional)</label><div class="price-wrap"><span>$</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
       <button class="btn sage block" data-a="save">${item ? 'Save' : 'Add to closet'}</button>
     </div>`);
     details.append(d);
@@ -704,13 +699,8 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     if (name) name.placeholder = autoName(st.result?.colors, st.cat, st.sub);
   }
 
-  function syncSwatches() {
-    syncNameHint();
-    const sw = $('[data-sw]', details);
-    if (!sw || !st.result) return;
-    const cols = mainColors(st.result);
-    sw.innerHTML = cols.map((c) => `<span class="sw" style="background:${c}"></span>`).join('') + `<span class="sw-names">${cols.map(colorName).join(', ')}</span>`;
-  }
+  // a new cut-out can change the piece's colours, and with them the suggested name
+  function syncSwatches() { syncNameHint(); }
 
   async function save() {
     await editor?.settle();
@@ -792,7 +782,6 @@ function openBatch(files, presetCat = null) {
         <button class="b-thumb" aria-label="Fix the cut-out of photo ${n}"><div class="spinner"></div><span class="b-tune">${svg('tune')}</span></button>
         <div class="b-main">
           <div class="b-cats">${CAT_ORDER.map((k) => `<button data-cat="${k}" aria-label="${CATS[k].label}" title="${CATS[k].label}">${svg(k)}</button>`).join('')}</div>
-          <div class="b-name"></div>
         </div>
         <button class="b-x" aria-label="Remove this photo">${svg('close')}</button>
       </div>`);
@@ -816,9 +805,6 @@ function openBatch(files, presetCat = null) {
       b.classList.toggle('active', b.dataset.cat === e.cat);
       b.setAttribute('aria-pressed', String(b.dataset.cat === e.cat));
     });
-    $('.b-name', e.el).textContent = !e.cat ? 'Choose a category'
-      : e.result ? autoName(e.result.colors, e.cat, null)
-      : CATS[e.cat].label;
   }
 
   function sync() {
@@ -1045,9 +1031,7 @@ function renderOutfits() {
     const cols = outfitColors(o);
     const card = h(`<button class="look" style="animation-delay:${(idx + 1) * 40}ms">
       <img class="thumb" src="${o.thumb || ''}" alt="" />
-      <div class="strip">${cols.map((c) => `<i style="background:${c}"></i>`).join('')}</div>
-      <div class="meta"><div class="name">${esc(o.name)}</div>
-      <div class="small"><span>${o.pieces.length} piece${o.pieces.length === 1 ? '' : 's'}</span></div></div></button>`);
+      <span class="meta"><span class="name">${esc(o.name)}</span><span class="dots">${cols.slice(0, 5).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>`);
     press(card, { tap: () => openEditor(o), long: (e) => contextMenu(card, o.name, [
       { icon: 'edit', label: 'Open', run: () => openEditor(o) },
       { icon: 'copy', label: 'Duplicate', run: async () => {
@@ -1106,11 +1090,7 @@ function openEditor(outfit = null, startIds = []) {
       <button class="round dark" data-a="add" aria-label="Add pieces">${svg('plus')}</button>
       <button class="round" data-a="bg" aria-label="Board colour"><span data-bgdot style="width:22px;height:22px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--ink-3)"></span></button>
       <button class="round" data-a="shuffle" aria-label="Tidy layout">${svg('sparkle')}</button>
-      <div class="total"><b data-total>0 pieces</b></div>
-    </div>
-    <div class="palette-tray">
-      <div class="row"><span class="lbl">Colours</span><div class="pill-strip" data-in></div></div>
-      <div class="note" data-note></div>
+      <div class="palette-tray"><div class="pill-strip" data-in aria-label="Colours in this look"></div></div>
     </div>
   </div>`);
   const s = sheet(c, { full: true });
@@ -1156,7 +1136,6 @@ function openEditor(outfit = null, startIds = []) {
   }
   function sync() {
     $('.hint', board).style.opacity = o.pieces.length ? 0 : 1;
-    $('[data-total]', c).textContent = `${o.pieces.length} piece${o.pieces.length === 1 ? '' : 's'}`;
     syncPalette();
   }
 
@@ -1276,13 +1255,12 @@ function openEditor(outfit = null, startIds = []) {
     const inEl = $('[data-in]', c);
     const cols = outfitColors(o);
     inEl.innerHTML = '';
-    (cols.length ? cols : ['#e9e4d8']).forEach((col) => inEl.append(swatchBtn(col, !cols.length)));
-    $('[data-note]', c).textContent = '';
+    (cols.length ? cols : ['#ece8e1']).forEach((col) => inEl.append(swatchBtn(col, !cols.length)));
   }
   function swatchBtn(col, placeholder = false) {
     const b = h(`<button style="background:${col}" aria-label="${colorName(col)}"></button>`);
     if (placeholder) return b;
-    press(b, { tap: () => { $('[data-note]', c).textContent = colorName(col); }, hapticTap: 'select' });
+    press(b, { tap: () => toast(colorName(col)), hapticTap: 'select' });
     return b;
   }
 
@@ -1408,23 +1386,17 @@ function openTally() {
     const uses = new Map();
     state.outfits.forEach((o) => new Set(o.pieces.map((p) => p.itemId)).forEach((id) => uses.set(id, (uses.get(id) || 0) + 1)));
     const mostStyled = state.items.filter((i) => uses.get(i.id)).sort((x, y) => uses.get(y.id) - uses.get(x.id))[0];
-    const unstyled = state.items.filter((i) => !uses.get(i.id)).length;
-    const newest = [...state.items].sort((x, y) => y.created - x.created)[0];
     c.innerHTML = `<h2>Tally</h2>
       <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'}</small></div>
-      <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}, ${status}. Open the price list">
-        <span class="vp-l">Value</span><span class="vp-v">${money(t.v)}</span>
-        <span class="vp-s">${status}</span>${svg('back', 'class="vp-c"')}
-      </button>
       ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 80}ms"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}
-      <div class="kv" style="margin-top:16px">
-        <div><small>Looks</small><b>${state.outfits.length}</b></div>
-        <div><small>Unstyled</small><b>${unstyled}</b></div>
-      </div>
       <div class="kv">
+        <div><small>Looks</small><b>${state.outfits.length}</b></div>
         <div><small>Most styled</small><b>${mostStyled ? esc(mostStyled.name) : 'None'}</b></div>
-        <div><small>Newest</small><b>${newest ? esc(newest.name) : 'None'}</b></div>
-      </div>`;
+      </div>
+      <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}, ${status}. Open the price list">
+        <span class="vp-l">Closet value</span><span class="vp-v">${money(t.v)}</span>
+        <span class="vp-s">${status}</span>${svg('back', 'class="vp-c"')}
+      </button>`;
     // after pricing: refresh the numbers and hand focus back to the pill
     const prices = () => openPrices(() => { draw(); $('[data-a=prices]', c)?.focus({ preventScroll: true }); });
     press($('[data-a=prices]', c), { tap: prices, long: prices, hapticTap: 'select' });
@@ -1439,7 +1411,6 @@ let pricesOpen = false;
 function openPrices(onClose) {
   if (pricesOpen) return; // one list at a time: a second copy would hold stale boxes
   pricesOpen = true;
-  const cur = state.settings.currency;
   // order is fixed when the list opens so rows don't jump while typing
   const byNew = (x, y) => y.created - x.created;
   const todo = state.items.filter((i) => !isPriced(i)).sort(byNew);
@@ -1488,7 +1459,7 @@ function openPrices(onClose) {
       const row = h(`<div class="price-row">
         <img src="${it.sticker}" alt="" />
         <div class="pr-text"><div class="pr-name">${esc(it.name)}</div><div class="pr-sub">${esc(it.sub || CATS[it.cat]?.label || '')}</div></div>
-        <label class="pr-input"><span>${esc(cur)}</span><input inputmode="decimal" enterkeyhint="next" autocomplete="off" maxlength="9" placeholder="0" aria-label="Price of ${esc(it.name)}" value="${isPriced(it) ? priceText(it.price) : ''}" /></label>
+        <label class="pr-input"><span>$</span><input inputmode="decimal" enterkeyhint="next" autocomplete="off" maxlength="9" placeholder="0" aria-label="Price of ${esc(it.name)}" value="${isPriced(it) ? priceText(it.price) : ''}" /></label>
       </div>`);
       const inp = $('input', row);
       rows.push({ it, inp, row });
@@ -1549,18 +1520,9 @@ function openPrices(onClose) {
 
 function openSettings() {
   const c = h(`<div><h2>Settings</h2>
-    <div class="toggle"><span>Haptics</span><button class="switch ${hapticsEnabled() ? 'on' : ''}" data-a="hap" aria-label="Haptics"></button></div>
-    <div class="field"><label>Currency</label><div class="wrap-chips" data-cur></div></div>
     <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="exp">Backup</button><button class="btn soft" data-a="imp">Restore</button></div>
     <button class="btn ghost block" data-a="wipe">Clear everything</button></div>`);
   const s = sheet(c);
-  const hb = $('[data-a=hap]', c);
-  press(hb, { tap: () => { const on = !hb.classList.contains('on'); hb.classList.toggle('on', on); setHaptics(on); state.settings.haptics = on; saveSettings(); haptic('select'); }, hapticTap: null });
-  ['$', '€', '£', '¥', '₩', '₹', 'A$', 'C$'].forEach((sym) => {
-    const b = h(`<button class="chip small ${state.settings.currency === sym ? 'active' : ''}">${sym}</button>`);
-    press(b, { tap: () => { state.settings.currency = sym; saveSettings(); $$('.chip', $('[data-cur]', c)).forEach((x) => x.classList.toggle('active', x === b)); render(); }, hapticTap: 'select' });
-    $('[data-cur]', c).append(b);
-  });
   press($('[data-a=exp]', c), { tap: exportData });
   press($('[data-a=imp]', c), { tap: () => { const f = $('#file-import'); f.value = ''; f.onchange = () => f.files[0] && importData(f.files[0]).then(() => s.close()); f.click(); } });
   press($('[data-a=wipe]', c), { tap: async () => {
@@ -1571,10 +1533,8 @@ function openSettings() {
   } });
 }
 
-function saveSettings() { db.put('meta', { key: 'settings', value: state.settings }); }
-
 async function exportData() {
-  const blob = new Blob([JSON.stringify({ version: 1, exported: new Date().toISOString(), items: state.items, outfits: state.outfits, settings: state.settings })], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ version: 1, exported: new Date().toISOString(), items: state.items, outfits: state.outfits })], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `my-closet-${new Date().toISOString().slice(0, 10)}.json`;
@@ -1595,17 +1555,15 @@ async function importData(file) {
 /* ------------------------------------------------------------------ boot */
 
 async function load() {
-  const [items, outfits, settings] = await Promise.all([db.all('items'), db.all('outfits'), db.get('meta', 'settings')]);
+  const [items, outfits] = await Promise.all([db.all('items'), db.all('outfits')]);
   state.items = items || [];
   state.outfits = outfits || [];
-  if (settings?.value) Object.assign(state.settings, settings.value);
-  setHaptics(state.settings.haptics);
 }
 
 function bindChrome() {
   $$('.tab[data-view]').forEach((t) => press(t, {
     tap: () => setView(t.dataset.view),
-    long: t.dataset.view === 'closet' ? (e) => contextMenu(t, 'Pieces', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => { state.filterCat = k; state.filterSub = null; if (state.view !== 'closet') setView('closet'); else renderCloset(); } })), e)
+    long: t.dataset.view === 'closet' ? (e) => contextMenu(t, 'Closet', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => { state.filterCat = k; state.filterSub = null; if (state.view !== 'closet') setView('closet'); else renderCloset(); } })), e)
       : (e) => contextMenu(t, 'Looks', [
         { icon: 'plus', label: 'New look', run: () => openEditor() },
         { icon: 'sparkle', label: 'Surprise me', run: surpriseLook },

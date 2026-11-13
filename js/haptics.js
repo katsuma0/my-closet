@@ -2,7 +2,6 @@
 // Android / Chrome: Vibration API.
 // iOS Safari (18+): toggling a native <input switch> produces a system haptic tick.
 
-let enabled = true;
 let iosLabel = null;
 
 const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) ||
@@ -35,7 +34,6 @@ const patterns = {
 };
 
 export function haptic(kind = 'light') {
-  if (!enabled) return;
   try {
     if (isIOS) {
       iosTick();
@@ -45,6 +43,3 @@ export function haptic(kind = 'light') {
     }
   } catch { /* no-op */ }
 }
-
-export function setHaptics(on) { enabled = !!on; }
-export function hapticsEnabled() { return enabled; }
