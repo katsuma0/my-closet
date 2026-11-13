@@ -15,15 +15,30 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;1,500&display=swap" rel="stylesheet" />
+  <script>
+    // appearance and accessibility choices, applied before the page paints
+    try {
+      var p = JSON.parse(localStorage.getItem('closet.prefs') || '{}'), r = document.documentElement;
+      if (p.theme === 'light' || p.theme === 'dark') r.dataset.theme = p.theme;
+      if (p.text) r.style.setProperty('--ts', p.text);
+      if (p.contrast) r.dataset.contrast = 'more';
+      if (p.motion) r.dataset.motion = 'reduce';
+    } catch (e) {}
+  </script>
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
   <div id="app">
     <header class="top">
       <h1 class="title" id="view-title">My closet</h1>
-      <button class="icon-btn" id="settings-btn" aria-label="Settings">
-        <svg viewBox="0 0 24 24"><path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.6"/><circle cx="8" cy="17" r="2.6"/></svg>
-      </button>
+      <div class="top-actions">
+        <button class="icon-btn" id="search-btn" aria-label="Search">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg>
+        </button>
+        <button class="icon-btn" id="settings-btn" aria-label="Settings">
+          <svg viewBox="0 0 24 24"><path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.6"/><circle cx="8" cy="17" r="2.6"/></svg>
+        </button>
+      </div>
     </header>
 
     <main id="views">
