@@ -306,7 +306,7 @@ function renderCloset() {
   const t = totals();
   const maxN = Math.max(1, ...CAT_ORDER.map((c) => t.by[c].n));
   const nLooks = state.outfits.length;
-  const tally = h(`<button class="tally" aria-label="Open the tally">
+  const tally = h(`<button class="tally">
       <div><div class="label">in your closet</div><div class="value">${t.n} piece${t.n === 1 ? '' : 's'}</div>
       <div class="count">${nLooks ? `${nLooks} look${nLooks === 1 ? '' : 's'} styled` : 'no looks yet'}</div></div>
       <div class="tally-bars">${CAT_ORDER.map((c) => `<i style="height:${8 + 36 * (t.by[c].n / maxN)}px"></i>`).join('')}</div>
@@ -440,7 +440,8 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     result: item ? { dataURL: item.sticker, colors: item.colors } : null,
     cat: item?.cat || cat || (state.filterCat !== 'all' ? state.filterCat : 'top'),
     sub: item?.sub || (state.filterSub ?? null),
-    name: item?.name || '',
+    // a name the app generated stays automatic, so it follows later category / type changes
+    name: item && item.name !== autoName(item.colors, item.cat, item.sub) ? item.name : '',
     price: item?.price ?? '',
     customSubs: [],
   };
@@ -630,9 +631,17 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       inp.addEventListener('blur', done);
     } });
     wrap.append(add);
+    syncNameHint();
+  }
+
+  // the name box hints at the name the piece gets if it is left empty
+  function syncNameHint() {
+    const name = $('[data-name]', details);
+    if (name) name.placeholder = autoName(st.result?.colors, st.cat, st.sub);
   }
 
   function syncSwatches() {
+    syncNameHint();
     const sw = $('[data-sw]', details);
     if (!sw || !st.result) return;
     sw.innerHTML = (st.result.colors || []).map((c) => `<span class="sw" style="background:${c}" title="${colorName(c)}"></span>`).join('') +
@@ -647,7 +656,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       created: item?.created || Date.now(),
       name: (st.name || '').trim() || autoName(colors, st.cat, st.sub),
       cat: st.cat, sub: st.sub,
-      price: parsePrice(st.price),
+      price: item ? (item.price ?? null) : parsePrice(st.price), // editing never touches the price
       sticker: st.result.dataURL,
       colors,
       original: st.original,
@@ -684,11 +693,10 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Several photos picked at once: cut them all out, ask only "what is it?" for each, add them together. */
 function openBatch(files, presetCat = null) {
-  const images = files.filter((f) => !f.type || f.type.startsWith('image/'));
-  const overflow = Math.max(0, images.length - BATCH_MAX);
-  // status: wait → busy → done | fail (unreadable) | gone (removed by hand or already saved)
-  const entries = images.slice(0, BATCH_MAX).map((file) => ({ file, status: 'wait', cat: presetCat, result: null, original: null, el: null }));
-  let failed = files.length - images.length, cancelled = false, saving = false;
+  const overflow = Math.max(0, files.length - BATCH_MAX);
+  // status: wait → busy → done | fail (could not be decoded) | gone (removed by hand or already saved)
+  const entries = files.slice(0, BATCH_MAX).map((file) => ({ file, status: 'wait', cat: presetCat, result: null, original: null, el: null }));
+  let failed = 0, cancelled = false, saving = false;
 
   const c = h(`<div class="batch">
     <div class="editor-top">
@@ -696,7 +704,7 @@ function openBatch(files, presetCat = null) {
       <h2 data-title></h2>
     </div>
     <div class="batch-progress"><div class="bar"><i data-bar></i></div><span data-status></span></div>
-    <div class="batch-all"><span class="field-label">they’re all</span><div class="chips">${CAT_ORDER.map((k) => `<button class="chip small" data-all="${k}">${CATS[k].label}</button>`).join('')}</div></div>
+    <div class="batch-all" role="group" aria-label="Set every photo at once"><span class="field-label">they’re all</span><div class="chips">${CAT_ORDER.map((k) => `<button class="chip small" data-all="${k}" aria-label="All ${CATS[k].label.toLowerCase()}" aria-pressed="false">${CATS[k].label}</button>`).join('')}</div></div>
     <div class="batch-list" data-list></div>
     <div class="batch-foot">
       <button class="btn block" data-a="save"></button>
@@ -711,7 +719,7 @@ function openBatch(files, presetCat = null) {
   function paint(e) {
     if (e.status === 'fail' || e.status === 'gone') { e.el?.remove(); e.el = null; return; }
     if (!e.el) {
-      e.el = h(`<div class="batch-row">
+      e.el = h(`<div class="batch-row" role="group" aria-label="Photo ${entries.indexOf(e) + 1} of ${entries.length}">
         <div class="b-thumb"><div class="spinner"></div></div>
         <div class="b-main">
           <div class="b-cats">${CAT_ORDER.map((k) => `<button data-cat="${k}" aria-label="${CATS[k].label}" title="${CATS[k].label}">${svg(k)}</button>`).join('')}</div>
@@ -720,8 +728,7 @@ function openBatch(files, presetCat = null) {
         <button class="b-x" aria-label="Remove this photo">${svg('close')}</button>
       </div>`);
       $$('[data-cat]', e.el).forEach((b) => press(b, {
-        tap: () => { e.cat = b.dataset.cat; paint(e); sync(); },
-        long: () => setAll(b.dataset.cat), // long-press = this category for every photo
+        tap: () => { if (saving) return; e.cat = b.dataset.cat; paint(e); sync(); },
         hapticTap: 'select',
       }));
       press($('.b-x', e.el), { tap: () => drop(e) });
@@ -751,21 +758,27 @@ function openBatch(files, presetCat = null) {
     if (overflow) notes.push(`first ${BATCH_MAX} only`);
     $('[data-status]', c).textContent = [cutting ? `cutting out ${Math.min(done + 1, l.length)} of ${l.length}` : 'all cut out', ...notes].join(' · ');
     const btn = $('[data-a=save]', c);
-    btn.className = `btn block ${!cutting && !missing ? 'sage' : 'soft'}`;
-    btn.innerHTML = missing ? `pick a category for ${missing === l.length ? (l.length === 1 ? 'it' : 'each one') : `${missing} more`}`
+    btn.className = `btn block ${!cutting && !missing && !saving ? 'sage' : 'soft'}`;
+    btn.innerHTML = saving ? 'adding…' : missing ? `pick a category for ${missing === l.length ? (l.length === 1 ? 'it' : 'each one') : `${missing} more`}`
       : cutting ? 'cutting out…'
       : `${svg('check')} add ${pieces} to closet`;
     $('.batch-all', c).style.display = l.length > 1 ? '' : 'none';
-    $$('[data-all]', c).forEach((b) => b.classList.toggle('active', l.length > 0 && l.every((e) => e.cat === b.dataset.all)));
+    $$('[data-all]', c).forEach((b) => {
+      const on = l.length > 0 && l.every((e) => e.cat === b.dataset.all);
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
   }
 
   function setAll(cat) {
+    if (saving) return;
     live().forEach((e) => { e.cat = cat; paint(e); });
     sync();
     toast(`all set to ${CATS[cat].label.toLowerCase()}`);
   }
 
   function drop(e) {
+    if (saving) return;
     e.status = 'gone'; e.file = null; e.result = null; e.original = null;
     paint(e); sync();
     if (!live().length) { cancelled = true; s.close(); toast('nothing left to add'); }
@@ -783,17 +796,21 @@ function openBatch(files, presetCat = null) {
       return;
     }
     if (l.some((e) => e.status !== 'done')) { haptic('warning'); toast('still cutting out — one moment'); return; }
-    saving = true;
+    saving = true; sync();
     const now = Date.now();
+    // every record is built up front, so nothing the user taps while it saves can change the batch
+    const recs = l.map((e, i) => ({
+      e,
+      rec: {
+        id: uid(), created: now + i,
+        name: autoName(e.result.colors, e.cat, null), cat: e.cat, sub: null, price: null,
+        sticker: e.result.dataURL, colors: e.result.colors || [],
+        original: e.original, cut: { tolerance: 32, seeds: [], removeBg: true },
+      },
+    }));
     let added = 0;
     try {
-      for (const e of l) {
-        const rec = {
-          id: uid(), created: now + added,
-          name: autoName(e.result.colors, e.cat, null), cat: e.cat, sub: null, price: null,
-          sticker: e.result.dataURL, colors: e.result.colors || [],
-          original: e.original, cut: { tolerance: 32, seeds: [], removeBg: true },
-        };
+      for (const { e, rec } of recs) {
         await db.put('items', rec);
         state.items.push(rec);
         e.status = 'gone'; added++;
@@ -833,7 +850,7 @@ function openBatch(files, presetCat = null) {
 
   entries.forEach(paint);
   sync();
-  if (overflow) toast(`adding the first ${BATCH_MAX} — do the rest in another go`);
+  if (overflow) toast(`first ${BATCH_MAX} photos only — add the rest next`);
 
   // cut the photos out one at a time, yielding between them so the sheet stays responsive
   (async () => {
@@ -859,6 +876,8 @@ function openBatch(files, presetCat = null) {
     }
     if (!cancelled && !live().length) {
       cancelled = true;
+      // close anything stacked on top first (the "Leave these behind?" question would be left dangling)
+      while (stack.includes(s) && stack[stack.length - 1] !== s) stack[stack.length - 1].close();
       haptic('warning'); toast('none of those photos could be read');
       s.close();
     }
@@ -1358,6 +1377,7 @@ function openTally() {
     const t = totals();
     const maxN = Math.max(1, ...CAT_ORDER.map((k) => t.by[k].n));
     const unpriced = t.n - t.priced;
+    const status = !t.n ? 'no pieces yet' : unpriced ? `${unpriced} to price` : 'all priced';
     // how often each piece appears in a look
     const uses = new Map();
     state.outfits.forEach((o) => new Set(o.pieces.map((p) => p.itemId)).forEach((id) => uses.set(id, (uses.get(id) || 0) + 1)));
@@ -1369,9 +1389,9 @@ function openTally() {
     const signature = [...colourCount.entries()].sort((x, y) => y[1].n - x[1].n)[0];
     c.innerHTML = `<h2>the tally</h2>
       <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'} in your closet</small></div>
-      <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}. Open the price list">
+      <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}, ${status}. Open the price list">
         <span class="vp-l">closet value</span><span class="vp-v">${money(t.v)}</span>
-        <span class="vp-s">${!t.n ? 'no pieces yet' : unpriced ? `${unpriced} to price` : 'all priced'}</span>${svg('back', 'class="vp-c"')}
+        <span class="vp-s">${status}</span>${svg('back', 'class="vp-c"')}
       </button>
       ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 80}ms;background:${['var(--sage)', 'var(--clay)', '#8fa8b0', '#b9a3c4'][i]}"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}
       <div class="kv" style="margin-top:16px">
@@ -1382,14 +1402,19 @@ function openTally() {
         <div><small>most styled</small><b>${mostStyled ? esc(mostStyled.name) : '—'}</b></div>
         <div><small>signature colour</small><b>${signature ? `<i class="dot" style="background:${signature[1].col}"></i>${signature[0]}` : '—'}</b></div>
       </div>`;
-    press($('[data-a=prices]', c), { tap: () => openPrices(draw), long: () => openPrices(draw), hapticTap: 'select' });
+    // after pricing: refresh the numbers and hand focus back to the pill
+    const prices = () => openPrices(() => { draw(); $('[data-a=prices]', c)?.focus({ preventScroll: true }); });
+    press($('[data-a=prices]', c), { tap: prices, long: prices, hapticTap: 'select' });
   };
   draw();
   sheet(c);
 }
 
 /** The one place prices are listed and edited. Unpriced pieces come first. */
+let pricesOpen = false;
 function openPrices(onClose) {
+  if (pricesOpen) return; // one list at a time: a second copy would hold stale boxes
+  pricesOpen = true;
   const cur = state.settings.currency;
   // order is fixed when the list opens so rows don't jump while typing
   const byNew = (x, y) => y.created - x.created;
@@ -1406,9 +1431,11 @@ function openPrices(onClose) {
     $('[data-count]', c).textContent = `${t.priced} of ${t.n} priced`;
   };
   const pending = new Map(); // item id -> save timer
+  const dirty = new Set(); // ids whose box was actually changed; nothing else is ever written
   const rows = []; // { it, inp, row } in display order
   const commit = async (it, inp) => {
     clearTimeout(pending.get(it.id)); pending.delete(it.id);
+    if (!dirty.delete(it.id)) return;
     const next = parsePrice(inp.value);
     if (next === (isPriced(it) ? Number(it.price) : null)) return;
     it.price = next;
@@ -1424,41 +1451,47 @@ function openPrices(onClose) {
     const top = vv ? vv.offsetTop : 0, height = vv ? vv.height : window.innerHeight;
     const head = $('.price-total', c).getBoundingClientRect().bottom;
     if (r.bottom > top + height - 16 || r.top < head + 8) {
-      sh.el.scrollBy({ top: r.top + r.height / 2 - (top + height * 0.42), behavior: 'smooth' });
+      // aim a little above the middle of what is visible, but never underneath the pinned total
+      const target = Math.max(head + 8 + r.height / 2, top + height * 0.42);
+      sh.el.scrollBy({ top: r.top + r.height / 2 - target, behavior: 'smooth' });
     }
   };
   const onViewport = () => { const r = rows.find((x) => x.inp === document.activeElement); if (r) reveal(r.row, r.inp); };
   vv?.addEventListener('resize', onViewport);
   const section = (title, items) => {
     if (!items.length) return;
-    list.append(h(`<div class="price-head">${title} <span>${items.length}</span></div>`));
+    list.append(h(`<div class="price-head">${title}</div>`));
     items.forEach((it) => {
       const row = h(`<div class="price-row">
         <img src="${it.sticker}" alt="" />
         <div class="pr-text"><div class="pr-name">${esc(it.name)}</div><div class="pr-sub">${esc(CATS[it.cat]?.label || '')}${it.sub ? ' · ' + esc(it.sub) : ''}</div></div>
-        <label class="pr-input"><span>${esc(cur)}</span><input inputmode="decimal" enterkeyhint="next" autocomplete="off" placeholder="—" aria-label="Price of ${esc(it.name)}" value="${isPriced(it) ? priceText(it.price) : ''}" /></label>
+        <label class="pr-input"><span>${esc(cur)}</span><input inputmode="decimal" enterkeyhint="next" autocomplete="off" maxlength="9" placeholder="—" aria-label="Price of ${esc(it.name)}" value="${isPriced(it) ? priceText(it.price) : ''}" /></label>
       </div>`);
       const inp = $('input', row);
       rows.push({ it, inp, row });
+      let wasPriced = isPriced(it); // as it stood when the box last gained focus
       inp.addEventListener('input', () => {
         inp.value = cleanPrice(inp.value);
+        dirty.add(it.id);
         clearTimeout(pending.get(it.id));
         pending.set(it.id, setTimeout(() => commit(it, inp), 500));
       });
       inp.addEventListener('focus', () => {
         row.classList.add('focus');
-        // select() focuses the input in some browsers, so only ever select the one that still has focus
-        // (otherwise two quick focus changes would steal focus back and forth forever)
-        setTimeout(() => { if (document.activeElement === inp) inp.select(); }, 0);
+        wasPriced = isPriced(it);
+        // Select the old value so typing replaces it — but only if this box still has focus (select()
+        // can steal focus, and two boxes would then fight over it) and nothing has been typed yet
+        // (or a fast first digit would be selected and overwritten by the second).
+        const v0 = inp.value;
+        setTimeout(() => { if (document.activeElement === inp && inp.value === v0) inp.select(); }, 0);
         setTimeout(() => reveal(row, inp), 350);
       });
       inp.addEventListener('blur', async () => {
         row.classList.remove('focus');
-        const before = isPriced(it);
         await commit(it, inp);
         // tidy the display ("12." → "12")
         inp.value = isPriced(it) ? priceText(it.price) : '';
-        if (isPriced(it) !== before) haptic(isPriced(it) ? 'success' : 'light');
+        if (isPriced(it) !== wasPriced) { haptic(isPriced(it) ? 'success' : 'light'); wasPriced = isPriced(it); }
       });
       inp.addEventListener('keydown', (e) => {
         if (e.key !== 'Enter') return;
@@ -1466,12 +1499,11 @@ function openPrices(onClose) {
         const nxt = rows[rows.findIndex((r) => r.inp === inp) + 1];
         if (nxt) nxt.inp.focus(); else inp.blur();
       });
-      // long-press the piece (not the input) for quick actions
+      // tap the piece to type its price; long-press for quick actions
       press($('.pr-text', row), {
         tap: () => inp.focus(),
         long: (e) => contextMenu(null, it.name, [
-          { icon: 'edit', label: 'Set price', run: () => inp.focus() },
-          { icon: 'undo', label: 'Clear price', run: async () => { inp.value = ''; await commit(it, inp); } },
+          { icon: 'undo', label: 'Clear price', run: async () => { inp.value = ''; dirty.add(it.id); await commit(it, inp); wasPriced = false; } },
         ], e),
         hapticTap: 'select',
       });
@@ -1483,6 +1515,7 @@ function openPrices(onClose) {
   section('priced', done);
   syncTotal();
   sh = sheet(c, { onClose: () => {
+    pricesOpen = false;
     vv?.removeEventListener('resize', onViewport);
     // save whatever was typed last, even if its box still has focus or its debounce hasn't fired
     rows.forEach(({ it, inp }) => { commit(it, inp); });

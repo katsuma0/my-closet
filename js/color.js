@@ -83,6 +83,10 @@ const NAMED = [
   ['Yellow', '#ecd25a'], ['Butter', '#f3e3a1'], ['Olive', '#6f7240'], ['Sage', '#a3b18a'], ['Green', '#3f8a4f'],
   ['Forest', '#2c4a35'], ['Mint', '#b6dcc5'], ['Teal', '#2b7a78'], ['Sky', '#9cc3e0'], ['Denim', '#4f6d8f'],
   ['Blue', '#2f5fa8'], ['Navy', '#1f2b4a'], ['Lavender', '#b9a3d4'], ['Purple', '#6c3f8f'], ['Plum', '#5a2d47'],
+  // vivid anchors: the list above is mostly muted, and without these a saturated colour
+  // lands on the wrong neighbour (royal blue → "Purple", lime → "Yellow")
+  ['Blue', '#1f45c4'], ['Blue', '#2440ff'], ['Blue', '#0a14e6'], ['Navy', '#0a0a78'], ['Purple', '#8a2be2'], ['Purple', '#6a1fd0'], ['Green', '#4caf50'],
+  ['Green', '#33dd33'], ['Red', '#e8211d'], ['Yellow', '#ffe81a'], ['Orange', '#ff8c1a'], ['Pink', '#ff5fa2'], ['Teal', '#12b5b0'],
 ];
 // CIE Lab, so a muted green reads as "Sage" rather than the nearest grey.
 function hexToLab(hex) {
@@ -93,11 +97,19 @@ function hexToLab(hex) {
   const z = f((r * 0.0193 + g * 0.1192 + b * 0.9505) / 1.08883);
   return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
 }
-const NAMED_LAB = NAMED.map(([n, h]) => [n, hexToLab(h)]);
+const NAMED_LAB = NAMED.map(([n, h]) => { const [hue, sat] = hexToHsl(h); return { n, lab: hexToLab(h), hue: sat < 8 ? null : hue }; });
 export function colorName(hex) {
   const [L, A, B] = hexToLab(hex);
-  let best = NAMED[0][0], bd = Infinity;
-  for (const [n, [l, a, b]] of NAMED_LAB) {
+  const [hue, sat, lig] = hexToHsl(hex);
+  // A clearly chromatic colour is only compared with names of a similar hue: on its own, Lab
+  // distance mixes up vivid blues and purples.
+  let pool = NAMED_LAB;
+  if (sat >= 40 && lig >= 15 && lig <= 85) {
+    const near = NAMED_LAB.filter((c) => c.hue !== null && Math.abs(((c.hue - hue + 540) % 360) - 180) <= 20);
+    if (near.length) pool = near;
+  }
+  let best = pool[0].n, bd = Infinity;
+  for (const { n, lab: [l, a, b] } of pool) {
     const d = (L - l) ** 2 + (A - a) ** 2 + (B - b) ** 2;
     if (d < bd) { bd = d; best = n; }
   }
