@@ -460,6 +460,7 @@ function openDetail(it) {
 /* ------------------------------------------------------------------ cut-out editor (shared) */
 
 const TOL_MIN = 6, TOL_MAX = 110;
+const CUT_V = 2; // version of the remover a saved strength belongs to
 
 /**
  * The background-remover controls: preview, "remove background" switch, tap-to-erase, undo and the
@@ -548,7 +549,8 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   const st = {
     original: item?.original || null,
     raster: null,
-    tolerance: item?.cut?.tolerance ?? DEFAULT_TOLERANCE,
+    // strengths saved by the earlier remover were on a different scale, so those start from today's default
+    tolerance: item?.cut?.v === CUT_V ? item.cut.tolerance : DEFAULT_TOLERANCE,
     seeds: item?.cut?.seeds ? [...item.cut.seeds] : [],
     removeBg: item?.cut?.removeBg ?? true,
     result: item ? { dataURL: item.sticker, colors: item.colors } : null,
@@ -705,7 +707,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       sticker: st.result.dataURL,
       colors,
       original: st.original,
-      cut: { tolerance: st.tolerance, seeds: st.seeds, removeBg: st.removeBg },
+      cut: { v: CUT_V, tolerance: st.tolerance, seeds: st.seeds, removeBg: st.removeBg },
     };
     await db.put('items', rec);
     const i = state.items.findIndex((x) => x.id === rec.id);
@@ -899,7 +901,7 @@ function openBatch(files, presetCat = null) {
         id: uid(), created: now + i,
         name: autoName(e.result.colors, e.cat, null), cat: e.cat, sub: null, price: null,
         sticker: e.result.dataURL, colors: mainColors(e.result),
-        original: e.original, cut: { tolerance: e.cut.tolerance, seeds: e.cut.seeds, removeBg: e.cut.removeBg },
+        original: e.original, cut: { v: CUT_V, tolerance: e.cut.tolerance, seeds: e.cut.seeds, removeBg: e.cut.removeBg },
       },
     }));
     let added = 0;
