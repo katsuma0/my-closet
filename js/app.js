@@ -1,6 +1,6 @@
 import { db, uid } from './db.js';
 import { haptic, setHaptics, hapticsEnabled } from './haptics.js';
-import { loadImage, fileToDataURL, rasterize, computeMask, renderSticker, renderMaskPreview } from './cutout.js';
+import { loadImage, rasterize, computeMask, renderSticker, renderMaskPreview } from './cutout.js';
 import { harmonies, INSPIRATION, colorName, closeness, textOn, hexToHsl } from './color.js';
 
 /* ------------------------------------------------------------------ data */
@@ -34,6 +34,7 @@ const ICON = {
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
   eraser: '<path d="m4 15 9-9 7 7-6 6H8zM9 10l7 7M8 20h12"/>',
   undo: '<path d="M9 7 4 12l5 5M4 12h11a5 5 0 0 1 0 10h-2"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
   rotate: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   swatch: '<circle cx="12" cy="12" r="8"/>',
@@ -265,6 +266,27 @@ function render() {
 
 /* ------------------------------------------------------------------ closet view */
 
+// Names a piece from its main colour and what it is: "Sage knit", "Denim jeans", "Beige accessory".
+const SINGULAR = { 'T-shirts': 't-shirt', Shirts: 'shirt', Blouses: 'blouse', Knits: 'knit', Hoodies: 'hoodie', Tanks: 'tank', Jackets: 'jacket', Coats: 'coat', Dresses: 'dress', Skirts: 'skirt', Bags: 'bag', Hats: 'hat', Belts: 'belt', Scarves: 'scarf', Watches: 'watch' };
+const CAT_NOUN = { top: 'top', bottom: 'bottoms', shoes: 'shoes', acc: 'accessory' };
+function autoName(colors, cat, sub) {
+  const noun = sub ? (SINGULAR[sub] || sub.toLowerCase()) : (CAT_NOUN[cat] || 'piece');
+  const n = `${colors?.[0] ? colorName(colors[0]) + ' ' : ''}${noun}`;
+  return n.charAt(0).toUpperCase() + n.slice(1);
+}
+
+/** Decode a photo once: a modest JPEG "original" (so the cut-out can be re-tuned later) plus working pixels. */
+async function photoFromFile(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await loadImage(url);
+    const r = rasterize(img, 1000);
+    const cc = document.createElement('canvas'); cc.width = r.width; cc.height = r.height;
+    cc.getContext('2d').putImageData(r, 0, 0);
+    return { original: cc.toDataURL('image/jpeg', 0.86), raster: rasterize(img, 900) };
+  } finally { URL.revokeObjectURL(url); }
+}
+
 // A piece is "priced" once it has any number on it (0 counts: gifts, hand-me-downs).
 const isPriced = (it) => it.price !== null && it.price !== undefined && it.price !== '' && Number.isFinite(Number(it.price));
 
@@ -438,9 +460,10 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     const p = h(`<div class="pick">
       <div class="pick-btns">
         <button class="btn" data-a="cam">${svg('camera')}<span>take photo</span></button>
-        <button class="btn soft" data-a="lib">${svg('image')}<span>choose photo</span></button>
+        <button class="btn soft" data-a="lib">${svg('image')}<span>choose photos</span></button>
       </div>
       <div class="tip"><span class="sun">${svg('sun')}</span><span><b>For the cleanest cut-out</b>, lay the piece flat on a light, plain background (a bedsheet, floor or wall), in soft even light, with a little space around it.</span></div>
+      <div class="tip many"><span class="sun">${svg('look')}</span><span><b>Adding lots?</b> Choose several photos at once and they’ll all be cut out and added together.</span></div>
     </div>`);
     press($('[data-a=cam]', p), { tap: () => pickFile('camera') });
     press($('[data-a=lib]', p), { tap: () => pickFile('library') });
@@ -451,23 +474,31 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   function pickFile(kind) {
     const input = kind === 'camera' ? $('#file-camera') : $('#file-library');
     input.value = '';
+    // several photos at once → the batch flow (only while starting a brand-new piece)
+    const multi = kind === 'library' && !item && !st.raster;
+    if (kind === 'library') input.multiple = multi;
     input.onchange = async () => {
-      const f = input.files?.[0];
-      if (!f) return;
-      await useFile(f);
+      const files = [...(input.files || [])];
+      if (!files.length) return;
+      if (multi && files.length > 1) {
+        s.close();
+        openBatch(files, cat || (state.filterCat !== 'all' ? state.filterCat : null));
+        return;
+      }
+      await useFile(files[0]);
     };
     input.click();
   }
 
   async function useFile(f) {
-    const url = await fileToDataURL(f);
-    const img = await loadImage(url);
-    // store a modest-size original so the cut can be re-tuned later
-    const r = rasterize(img, 1000);
-    const cc = document.createElement('canvas'); cc.width = r.width; cc.height = r.height;
-    cc.getContext('2d').putImageData(r, 0, 0);
-    st.original = cc.toDataURL('image/jpeg', 0.86);
-    st.raster = rasterize(img, 900);
+    let shot;
+    try { shot = await photoFromFile(f); } catch {
+      haptic('warning'); toast('that photo could not be read');
+      if (!st.raster && !item) renderPick();
+      return;
+    }
+    st.original = shot.original;
+    st.raster = shot.raster;
     st.seeds = [];
     renderStage();
     await process();
@@ -611,11 +642,10 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   async function save() {
     if (!st.result) { haptic('warning'); toast('add a photo first'); return; }
     const colors = st.result.colors || [];
-    const autoName = `${colors[0] ? colorName(colors[0]) + ' ' : ''}${(st.sub || CATS[st.cat].label).replace(/s$/, '').toLowerCase()}`;
     const rec = {
       id: item?.id || uid(),
       created: item?.created || Date.now(),
-      name: (st.name || '').trim() || autoName.charAt(0).toUpperCase() + autoName.slice(1),
+      name: (st.name || '').trim() || autoName(colors, st.cat, st.sub),
       cat: st.cat, sub: st.sub,
       price: parsePrice(st.price),
       sticker: st.result.dataURL,
@@ -645,6 +675,194 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     photo.innerHTML = `<div class="stage"><img src="${item.sticker}" alt="" /></div>`;
     renderDetails();
   } else renderPick();
+}
+
+/* ------------------------------------------------------------------ batch add */
+
+const BATCH_MAX = 30;
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Several photos picked at once: cut them all out, ask only "what is it?" for each, add them together. */
+function openBatch(files, presetCat = null) {
+  const images = files.filter((f) => !f.type || f.type.startsWith('image/'));
+  const overflow = Math.max(0, images.length - BATCH_MAX);
+  // status: wait → busy → done | fail (unreadable) | gone (removed by hand or already saved)
+  const entries = images.slice(0, BATCH_MAX).map((file) => ({ file, status: 'wait', cat: presetCat, result: null, original: null, el: null }));
+  let failed = files.length - images.length, cancelled = false, saving = false;
+
+  const c = h(`<div class="batch">
+    <div class="editor-top">
+      <button class="round" data-a="back" aria-label="Cancel">${svg('close')}</button>
+      <h2 data-title></h2>
+    </div>
+    <div class="batch-progress"><div class="bar"><i data-bar></i></div><span data-status></span></div>
+    <div class="batch-all"><span class="field-label">they’re all</span><div class="chips">${CAT_ORDER.map((k) => `<button class="chip small" data-all="${k}">${CATS[k].label}</button>`).join('')}</div></div>
+    <div class="batch-list" data-list></div>
+    <div class="batch-foot">
+      <button class="btn block" data-a="save"></button>
+      <p class="batch-hint">names are filled in for you · edit any piece later</p>
+    </div>
+  </div>`);
+  const s = sheet(c, { full: true });
+  s.el.style.paddingBottom = '0';
+  const listEl = $('[data-list]', c);
+  const live = () => entries.filter((e) => e.status !== 'fail' && e.status !== 'gone');
+
+  function paint(e) {
+    if (e.status === 'fail' || e.status === 'gone') { e.el?.remove(); e.el = null; return; }
+    if (!e.el) {
+      e.el = h(`<div class="batch-row">
+        <div class="b-thumb"><div class="spinner"></div></div>
+        <div class="b-main">
+          <div class="b-cats">${CAT_ORDER.map((k) => `<button data-cat="${k}" aria-label="${CATS[k].label}" title="${CATS[k].label}">${svg(k)}</button>`).join('')}</div>
+          <div class="b-name"></div>
+        </div>
+        <button class="b-x" aria-label="Remove this photo">${svg('close')}</button>
+      </div>`);
+      $$('[data-cat]', e.el).forEach((b) => press(b, {
+        tap: () => { e.cat = b.dataset.cat; paint(e); sync(); },
+        long: () => setAll(b.dataset.cat), // long-press = this category for every photo
+        hapticTap: 'select',
+      }));
+      press($('.b-x', e.el), { tap: () => drop(e) });
+      listEl.append(e.el);
+    }
+    if (e.status === 'done' && !$('img', e.el)) $('.b-thumb', e.el).innerHTML = `<img src="${e.result.dataURL}" alt="" />`;
+    e.el.classList.toggle('busy', e.status === 'busy');
+    e.el.classList.toggle('todo', !e.cat);
+    $$('[data-cat]', e.el).forEach((b) => {
+      b.classList.toggle('active', b.dataset.cat === e.cat);
+      b.setAttribute('aria-pressed', String(b.dataset.cat === e.cat));
+    });
+    $('.b-name', e.el).textContent = !e.cat ? 'what is it?'
+      : e.status === 'done' ? autoName(e.result.colors, e.cat, null)
+      : CATS[e.cat].label.toLowerCase();
+  }
+
+  function sync() {
+    const l = live();
+    const done = l.filter((e) => e.status === 'done').length, cutting = l.length - done;
+    const missing = l.filter((e) => !e.cat).length;
+    const pieces = `${l.length} piece${l.length === 1 ? '' : 's'}`;
+    $('[data-title]', c).textContent = `add ${pieces}`;
+    $('[data-bar]', c).style.width = `${l.length ? (done / l.length) * 100 : 100}%`;
+    const notes = [];
+    if (failed) notes.push(`${failed} couldn’t be read`);
+    if (overflow) notes.push(`first ${BATCH_MAX} only`);
+    $('[data-status]', c).textContent = [cutting ? `cutting out ${Math.min(done + 1, l.length)} of ${l.length}` : 'all cut out', ...notes].join(' · ');
+    const btn = $('[data-a=save]', c);
+    btn.className = `btn block ${!cutting && !missing ? 'sage' : 'soft'}`;
+    btn.innerHTML = missing ? `pick a category for ${missing === l.length ? (l.length === 1 ? 'it' : 'each one') : `${missing} more`}`
+      : cutting ? 'cutting out…'
+      : `${svg('check')} add ${pieces} to closet`;
+    $('.batch-all', c).style.display = l.length > 1 ? '' : 'none';
+    $$('[data-all]', c).forEach((b) => b.classList.toggle('active', l.length > 0 && l.every((e) => e.cat === b.dataset.all)));
+  }
+
+  function setAll(cat) {
+    live().forEach((e) => { e.cat = cat; paint(e); });
+    sync();
+    toast(`all set to ${CATS[cat].label.toLowerCase()}`);
+  }
+
+  function drop(e) {
+    e.status = 'gone'; e.file = null; e.result = null; e.original = null;
+    paint(e); sync();
+    if (!live().length) { cancelled = true; s.close(); toast('nothing left to add'); }
+  }
+
+  async function save() {
+    if (saving) return;
+    const l = live();
+    if (!l.length) return;
+    const first = l.find((e) => !e.cat);
+    if (first) {
+      haptic('warning');
+      first.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      first.el.classList.remove('nudge'); void first.el.offsetWidth; first.el.classList.add('nudge');
+      return;
+    }
+    if (l.some((e) => e.status !== 'done')) { haptic('warning'); toast('still cutting out — one moment'); return; }
+    saving = true;
+    const now = Date.now();
+    let added = 0;
+    try {
+      for (const e of l) {
+        const rec = {
+          id: uid(), created: now + added,
+          name: autoName(e.result.colors, e.cat, null), cat: e.cat, sub: null, price: null,
+          sticker: e.result.dataURL, colors: e.result.colors || [],
+          original: e.original, cut: { tolerance: 32, seeds: [], removeBg: true },
+        };
+        await db.put('items', rec);
+        state.items.push(rec);
+        e.status = 'gone'; added++;
+      }
+    } catch { /* most likely the device is out of storage; whatever was saved stays saved */ }
+    saving = false;
+    if (added) {
+      // make sure the new pieces are visible behind the sheet
+      if (state.filterCat !== 'all' && l.some((e) => e.cat !== state.filterCat)) state.filterCat = 'all';
+      state.filterSub = null;
+    }
+    if (added < l.length) {
+      haptic('warning');
+      toast(added ? `storage is full — added ${added} of ${l.length}` : 'storage is full — nothing was added');
+      entries.forEach(paint); sync(); render();
+      return;
+    }
+    cancelled = true;
+    haptic('success');
+    toast(`${added} piece${added === 1 ? '' : 's'} added to your closet`);
+    s.close();
+    if (state.view !== 'closet') setView('closet'); else render();
+  }
+
+  async function tryClose() {
+    if (saving) return;
+    const n = live().length;
+    if (n && !(await confirmSheet('Leave these behind?', `None of the ${n} photo${n === 1 ? '' : 's'} will be added.`, 'Discard'))) return;
+    cancelled = true;
+    s.close();
+  }
+  s.dismiss = tryClose;
+
+  press($('[data-a=back]', c), { tap: tryClose });
+  press($('[data-a=save]', c), { tap: save, hapticTap: null });
+  $$('[data-all]', c).forEach((b) => press(b, { tap: () => setAll(b.dataset.all), hapticTap: 'select' }));
+
+  entries.forEach(paint);
+  sync();
+  if (overflow) toast(`adding the first ${BATCH_MAX} — do the rest in another go`);
+
+  // cut the photos out one at a time, yielding between them so the sheet stays responsive
+  (async () => {
+    for (const e of entries) {
+      if (cancelled) return;
+      if (e.status !== 'wait') continue;
+      e.status = 'busy'; paint(e); sync();
+      await pause(40);
+      try {
+        const shot = await photoFromFile(e.file);
+        if (cancelled) return;
+        if (e.status === 'gone') continue;
+        const mask = computeMask(shot.raster, 32, []);
+        e.result = renderSticker(shot.raster, mask, { removeBg: true });
+        e.original = shot.original;
+        e.status = 'done';
+      } catch {
+        if (e.status === 'gone') continue;
+        e.status = 'fail'; failed++;
+      }
+      e.file = null;
+      paint(e); sync();
+    }
+    if (!cancelled && !live().length) {
+      cancelled = true;
+      haptic('warning'); toast('none of those photos could be read');
+      s.close();
+    }
+  })();
 }
 
 /* ------------------------------------------------------------------ outfits view */
@@ -1345,20 +1563,29 @@ function bindChrome() {
     tap: () => (state.view === 'outfits' ? openEditor() : openAdd()),
     long: (e) => contextMenu(fab, 'create', [
       { icon: 'camera', label: 'Take a photo', run: () => quickPick('camera') },
-      { icon: 'image', label: 'Choose from library', run: () => quickPick('library') },
+      { icon: 'image', label: 'Choose photos', run: () => quickPick('library') },
       { icon: 'look', label: 'New look', run: () => openEditor() },
       { icon: 'sparkle', label: 'Surprise me', run: surpriseLook },
     ], e),
     hapticTap: 'medium',
   });
   press($('#settings-btn'), { tap: openSettings, long: openTally });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && stack.length) stack[stack.length - 1].close(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !stack.length) return;
+    const top = stack[stack.length - 1];
+    (top.dismiss || top.close)(); // a sheet can ask before it closes (the batch sheet does)
+  });
 }
 
 function quickPick(kind) {
   const input = kind === 'camera' ? $('#file-camera') : $('#file-library');
   input.value = '';
-  input.onchange = () => { const f = input.files?.[0]; if (f) openAdd({ source: f }); };
+  if (kind === 'library') input.multiple = true;
+  input.onchange = () => {
+    const files = [...(input.files || [])];
+    if (files.length > 1) openBatch(files, state.filterCat !== 'all' ? state.filterCat : null);
+    else if (files[0]) openAdd({ source: files[0] });
+  };
   input.click();
 }
 

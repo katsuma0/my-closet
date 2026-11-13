@@ -3,6 +3,7 @@
 A calm, sticker-style wardrobe app: photograph your clothes, they become die-cut stickers, then collage them into looks.
 
 - **Closet** – upload or snap a photo; the background is removed on-device and the piece gets a smooth white sticker border. Sort into Tops / Bottoms / Shoes / Accessories and sub-types (or add your own).
+- **Bulk add** – choose several photos at once and they are all cut out together; you only pick a category for each (or one tap for "they're all tops"). Names are filled in automatically, and types, prices and cut-out tweaks can be added later.
 - **Tally & prices** – the tally shows piece counts per category, looks, your most-styled piece and signature colour, plus one small *closet value* pill. Tap it for the price list: every piece with a price box, unpriced ones first. Costs appear only in those two places (you can also type a price while uploading a new piece).
 - **Looks** – a mood-board collage: drag, pinch, twist, flip and layer pieces; board colours; a palette tray shows the colours in the look and what to try with them.
 - **Palette** – colour harmonies (complementary, analogous, triadic, tonal, neutral) built from your own pieces, plus calm inspiration palettes, with the closet pieces that match.

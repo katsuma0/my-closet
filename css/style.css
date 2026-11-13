@@ -279,6 +279,8 @@ main { padding: 0 18px calc(120px + var(--safe-b)); }
 .pick .tip { display: flex; gap: 12px; text-align: left; align-items: flex-start; background: var(--bg); border-radius: 18px; padding: 14px; margin: 18px 0 0; font-size: 13px; color: var(--ink-2); }
 .pick .tip b { color: var(--ink); font-weight: 500; }
 .pick .tip .sun { flex: none; width: 34px; height: 34px; border-radius: 50%; background: #f3ead9; display: grid; place-items: center; color: #c79a54; }
+.pick .tip.many { margin-top: 8px; }
+.pick .tip.many .sun { background: #e6ebdc; color: var(--sage-deep); }
 .pick-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .pick-btns .btn { height: 96px; flex-direction: column; border-radius: 22px; }
 .pick-btns .btn svg { width: 26px; height: 26px; }
@@ -318,6 +320,46 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
   transition: transform .35s var(--spring);
 }
 .sw:active { transform: scale(.9); }
+
+/* ---------- batch add ---------- */
+.batch { display: flex; flex-direction: column; min-height: 100%; }
+.batch .editor-top h2 { margin: 0 0 0 6px; }
+.batch-progress { display: flex; align-items: center; gap: 12px; margin: 4px 2px 14px; font-size: 12px; color: var(--ink-2); }
+.batch-progress .bar { flex: 1; height: 4px; border-radius: 2px; background: var(--bg-2); overflow: hidden; }
+.batch-progress .bar i { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--sage); transition: width .6s var(--ease); }
+.batch-all { margin-bottom: 6px; }
+.batch-all .field-label { margin: 0 0 6px 4px; }
+.batch-all .chips { flex-wrap: wrap; overflow: visible; padding: 0 0 8px; }
+.batch-list { flex: 1; }
+.batch-row {
+  display: flex; align-items: center; gap: 12px; padding: 10px; margin-bottom: 10px;
+  border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow-sm);
+  animation: pieceIn .5s var(--ease) both;
+}
+.b-thumb {
+  width: 72px; height: 72px; flex: none; border-radius: 16px; display: grid; place-items: center; padding: 4px;
+  background-color: var(--board);
+  background-image: radial-gradient(color-mix(in srgb, var(--ink) 10%, transparent) 1px, transparent 1.2px);
+  background-size: 12px 12px;
+}
+.b-thumb img { max-width: 100%; max-height: 64px; object-fit: contain; animation: stickerIn .6s var(--spring); }
+.b-thumb .spinner { width: 22px; height: 22px; opacity: 0; transition: opacity .3s; }
+.batch-row.busy .b-thumb .spinner { opacity: 1; }
+.b-main { flex: 1; min-width: 0; }
+.b-cats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; background: var(--bg-2); padding: 4px; border-radius: 14px; }
+.b-cats button { height: 44px; border-radius: 11px; display: grid; place-items: center; color: var(--ink-3); transition: background .35s var(--ease), color .35s; }
+.b-cats button.active { background: var(--ink); color: var(--bg); }
+.b-name { font-size: 12px; color: var(--ink-2); margin: 6px 0 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.batch-row.todo .b-name { color: var(--ink-3); font-style: italic; }
+.b-x { width: 32px; height: 44px; flex: none; display: grid; place-items: center; color: var(--ink-3); }
+.b-x svg { width: 16px; height: 16px; }
+.batch-row.nudge { animation: nudge .5s var(--ease); }
+@keyframes nudge { 0%, 100% { transform: none; } 20% { transform: translateX(-7px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(2px); } }
+.batch-foot {
+  position: sticky; bottom: 0; margin-top: 4px; padding: 18px 0 calc(14px + var(--safe-b));
+  background: linear-gradient(transparent, var(--bg) 22%);
+}
+.batch-hint { text-align: center; font-size: 12px; color: var(--ink-3); margin: 8px 0 0; }
 
 /* ---------- outfits ---------- */
 .looks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

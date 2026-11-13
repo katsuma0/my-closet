@@ -26,6 +26,7 @@ function tx(store, mode, fn) {
     const res = fn(s);
     t.oncomplete = () => resolve(res && 'result' in res ? res.result : res);
     t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error); // e.g. the device is out of storage
   }));
 }
 
