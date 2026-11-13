@@ -264,13 +264,17 @@ function contextMenu(anchor, title, actions, point) {
     scrim.classList.add('show'); menu.classList.add('show');
     if (preview) preview.style.transform = (anchor.style.transform || '') + ' scale(1.04)';
   }));
+  // Escape closes the menu before anything underneath it
+  function onKey(e) { if (e.key === 'Escape') { e.stopImmediatePropagation(); close(); } }
   function close() {
+    document.removeEventListener('keydown', onKey, true);
     scrim.classList.remove('show'); menu.classList.remove('show');
     if (preview) preview.style.transform = anchor.style.transform || '';
     setTimeout(() => { scrim.remove(); menu.remove(); preview?.remove(); }, 380);
   }
   scrim.addEventListener('click', close);
   scrim.addEventListener('contextmenu', (e) => { e.preventDefault(); close(); });
+  document.addEventListener('keydown', onKey, true);
 }
 
 let toastTimer;
@@ -1387,7 +1391,7 @@ function openTally() {
     const uses = new Map();
     state.outfits.forEach((o) => new Set(o.pieces.map((p) => p.itemId)).forEach((id) => uses.set(id, (uses.get(id) || 0) + 1)));
     const mostStyled = state.items.filter((i) => uses.get(i.id)).sort((x, y) => uses.get(y.id) - uses.get(x.id))[0];
-    c.innerHTML = `<h2>Tally</h2>
+    c.innerHTML = `<h2>Stats</h2>
       <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'}</small></div>
       ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 80}ms"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}
       <div class="kv">
@@ -1574,14 +1578,19 @@ function bindChrome() {
   press($('#tally-tab'), { tap: openTally, long: () => openPrices(), hapticTap: 'select' });
   const fab = $('#fab');
   press(fab, {
-    tap: () => (state.view === 'outfits' ? openEditor() : openAdd()),
-    long: (e) => contextMenu(fab, 'Add', [
+    // the + offers the two things there are to make
+    tap: (e) => contextMenu(fab, null, [
+      { icon: 'top', label: 'Add clothes', run: () => openAdd() },
+      { icon: 'look', label: 'Create a look', run: () => openEditor() },
+    ], e),
+    // held down: the shortcuts
+    long: (e) => contextMenu(fab, null, [
       { icon: 'camera', label: 'Take photo', run: () => quickPick('camera') },
       { icon: 'image', label: 'Choose photos', run: () => quickPick('library') },
-      { icon: 'look', label: 'New look', run: () => openEditor() },
+      { icon: 'look', label: 'Create a look', run: () => openEditor() },
       { icon: 'sparkle', label: 'Surprise me', run: surpriseLook },
     ], e),
-    hapticTap: 'medium',
+    hapticTap: null, // the menu gives its own
   });
   press($('#settings-btn'), { tap: openSettings, long: openTally });
   document.addEventListener('keydown', (e) => {
