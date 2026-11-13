@@ -1,6 +1,6 @@
 // Offline cache: app shell is cached, network-first so updates arrive quickly.
-const CACHE = 'my-closet-v1';
-const SHELL = ['./', 'index.html', 'css/style.css', 'js/app.js', 'js/db.js', 'js/cutout.js', 'js/color.js', 'js/haptics.js', 'manifest.webmanifest', 'icons/icon.svg'];
+const CACHE = 'my-closet-v2';
+const SHELL = ['./', 'index.html', 'css/style.css', 'js/app.js', 'js/db.js', 'js/cutout.js', 'js/edge.js', 'js/color.js', 'js/haptics.js', 'manifest.webmanifest', 'icons/icon.svg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

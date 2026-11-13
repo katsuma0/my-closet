@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Take photos of your clothes to add them to your closet.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose photos of your clothes to add them to your closet.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save pictures of your looks to your photos.</string>
+	<key>UIApplicationShortcutItems</key>
+	<array>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>add</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Add clothes</string>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>tshirt</string>
+		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>look</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Create a look</string>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>square.grid.2x2</string>
+		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>mix</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Mix</string>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>arrow.left.arrow.right</string>
+		</dict>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>stats</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Stats</string>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>chart.bar</string>
+		</dict>
+	</array>
+</dict>
+</plist>
