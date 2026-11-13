@@ -1,7 +1,7 @@
 import { db, uid } from './db.js';
 import { haptic, setHaptics, hapticsEnabled } from './haptics.js';
-import { loadImage, rasterize, computeMask, renderSticker, renderMaskPreview } from './cutout.js';
-import { harmonies, INSPIRATION, colorName, closeness, textOn, hexToHsl } from './color.js';
+import { loadImage, rasterize, computeMask, renderSticker, renderMaskPreview, DEFAULT_TOLERANCE } from './cutout.js';
+import { colorName, closeness } from './color.js';
 
 /* ------------------------------------------------------------------ data */
 
@@ -12,7 +12,8 @@ const CATS = {
   acc: { label: 'Accessories', subs: ['Bags', 'Hats', 'Jewelry', 'Belts', 'Scarves', 'Sunglasses', 'Watches'] },
 };
 const CAT_ORDER = ['top', 'bottom', 'shoes', 'acc'];
-const BOARD_COLORS = ['#f7f3ec', '#eef0e8', '#f3ebe6', '#eaeef0', '#efebf2', '#2e2b28'];
+const BOARD = [['Mist', '#f6f6f5'], ['White', '#ffffff'], ['Ivory', '#f1ede6'], ['Sand', '#e6dfd3'], ['Stone', '#d3ccc0'], ['Night', '#1d1d1b']];
+const BOARD_COLORS = BOARD.map((b) => b[1]);
 
 const ICON = {
   top: '<path d="M8 4 3.5 6.5l1.8 3.6L7.5 9v11h9V9l2.2 1.1 1.8-3.6L16 4c-.6 1.4-2.2 2.3-4 2.3S8.6 5.4 8 4z"/>',
@@ -28,13 +29,13 @@ const ICON = {
   copy: '<rect x="8" y="8" width="12" height="12" rx="3"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
   image: '<rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 4 3.5 3-2.5 4 3.5"/>',
-  palette: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.8 0-1-.9-1.4-.9-2.4 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/>',
   look: '<rect x="3.5" y="3.5" width="7" height="9" rx="2"/><rect x="13.5" y="3.5" width="7" height="5" rx="2"/><rect x="13.5" y="11.5" width="7" height="9" rx="2"/><rect x="3.5" y="15.5" width="7" height="5" rx="2"/>',
   back: '<path d="M15 5l-7 7 7 7"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
   eraser: '<path d="m4 15 9-9 7 7-6 6H8zM9 10l7 7M8 20h12"/>',
   undo: '<path d="M9 7 4 12l5 5M4 12h11a5 5 0 0 1 0 10h-2"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  tune: '<path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.6"/><circle cx="8" cy="17" r="2.6"/>',
   rotate: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   swatch: '<circle cx="12" cy="12" r="8"/>',
@@ -51,7 +52,6 @@ const state = {
   view: 'closet',
   filterCat: 'all',
   filterSub: null,
-  paletteBase: null,
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -64,6 +64,9 @@ const money = (n) => {
   return state.settings.currency + s;
 };
 const itemById = (id) => state.items.find((i) => i.id === id);
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+// the colours shown for a piece: its main two
+const mainColors = (x) => (x?.colors || []).slice(0, 2);
 // keep digits and a single decimal separator (comma typed on some keyboards becomes a dot)
 const cleanPrice = (v) => {
   const t = String(v).replace(/,/g, '.').replace(/[^0-9.]/g, '');
@@ -139,11 +142,59 @@ function sheet(content, { full = false, onClose } = {}) {
       syncTabbar();
     },
   };
-  if (!full) scrim.addEventListener('click', () => api.close());
-  // drag-to-dismiss from the grabber zone
   if (!full) {
+    scrim.addEventListener('click', () => (api.dismiss || api.close)());
+    // let go: far enough or fast enough puts the sheet away, otherwise it springs back
+    const settle = (dy, v = 0) => {
+      el.style.transition = '';
+      scrim.style.opacity = '';
+      el.style.transform = ''; // spring back first: a sheet that asks before closing may stay open
+      if (dy > Math.min(150, el.offsetHeight * 0.3) || (dy > 24 && v > 0.5)) { haptic('light'); (api.dismiss || api.close)(); }
+    };
+    const follow = (dy) => {
+      el.style.transform = `translateY(${dy}px)`;
+      scrim.style.opacity = String(Math.max(0.2, 1 - dy / Math.max(1, el.offsetHeight)));
+    };
+
+    // touch: swipe down anywhere on the sheet while its content is scrolled to the top
+    let t0 = null;
+    el.addEventListener('touchstart', (e) => {
+      if (t0 && t0.on) return; // a second finger must not strand a drag that is under way
+      t0 = null;
+      // not from the strength slider, and not from the photo while it is being tapped to erase
+      if (closed || e.touches.length !== 1 || e.target.closest('input[type=range], .slider-row, .stage.erasing')) return;
+      const t = e.touches[0];
+      t0 = { x: t.clientX, y: t.clientY, on: false, d: 0, v: 0, lastY: t.clientY, lastT: performance.now(), t: performance.now() };
+    }, { passive: true });
+    el.addEventListener('touchmove', (e) => {
+      if (!t0) return;
+      const t = e.touches[0];
+      if (!t0.on) {
+        const dx = t.clientX - t0.x, dy = t.clientY - t0.y;
+        // decided on the very first move, before the browser starts a scroll of its own
+        if (dy <= 0 || Math.abs(dx) > Math.abs(dy) || el.scrollTop > 0) { t0 = null; return; }
+        t0.on = true;
+        el.style.transition = 'none';
+      }
+      if (e.cancelable) e.preventDefault();
+      t0.d = Math.max(0, t.clientY - t0.y);
+      const now = performance.now(), dt = now - t0.lastT;
+      if (dt > 4) { t0.v = (t.clientY - t0.lastY) / dt; t0.lastY = t.clientY; t0.lastT = now; }
+      follow(t0.d);
+    }, { passive: false });
+    const touchEnd = () => {
+      if (!t0) return;
+      const { on, d, v, t } = t0; t0 = null;
+      // speed of the last stretch, or of the whole gesture when it was a short flick
+      if (on) settle(d, Math.max(v, d / Math.max(1, performance.now() - t)));
+    };
+    el.addEventListener('touchend', touchEnd);
+    el.addEventListener('touchcancel', touchEnd);
+
+    // mouse: drag the grabber area
     let y0 = null, dy = 0;
     el.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'touch') return;
       const r = el.getBoundingClientRect();
       if (e.clientY - r.top > 44 || el.scrollTop > 0) return;
       y0 = e.clientY; dy = 0; el.style.transition = 'none';
@@ -152,12 +203,12 @@ function sheet(content, { full = false, onClose } = {}) {
     el.addEventListener('pointermove', (e) => {
       if (y0 === null) return;
       dy = Math.max(0, e.clientY - y0);
-      el.style.transform = `translateY(${dy}px)`;
+      follow(dy);
     });
     const end = () => {
       if (y0 === null) return;
-      el.style.transition = ''; y0 = null;
-      if (dy > 110) { haptic('light'); api.close(); } else el.style.transform = '';
+      y0 = null;
+      settle(dy);
     };
     el.addEventListener('pointerup', end);
     el.addEventListener('pointercancel', end);
@@ -229,7 +280,7 @@ function toast(msg) {
 
 function confirmSheet(title, text, okLabel = 'Delete') {
   return new Promise((resolve) => {
-    const c = h(`<div><h2>${esc(title)}</h2><p class="sub">${esc(text)}</p>
+    const c = h(`<div><h2>${esc(title)}</h2>${text ? `<p class="sub">${esc(text)}</p>` : ''}
       <div class="row-btns"><button class="btn soft" data-a="no">Keep</button><button class="btn danger" data-a="yes">${esc(okLabel)}</button></div></div>`);
     let answered = false;
     const s = sheet(c, { onClose: () => { if (!answered) resolve(false); } });
@@ -243,7 +294,7 @@ function confirmSheet(title, text, okLabel = 'Delete') {
 function setView(v) {
   if (state.view === v) return;
   state.view = v;
-  $$('.tab[data-view]').forEach((t) => t.classList.toggle('active', t.dataset.view === v));
+  markTab(v);
   $$('.view').forEach((s) => s.classList.toggle('active', s.id === 'view-' + v));
   const title = $('#view-title');
   title.classList.add('swap');
@@ -252,16 +303,21 @@ function setView(v) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function greeting() {
-  const hr = new Date().getHours();
-  const g = hr < 5 ? 'still up' : hr < 12 ? 'good morning' : hr < 17 ? 'good afternoon' : hr < 22 ? 'good evening' : 'good night';
-  $('#greeting').textContent = g;
+// Which tab the glass drop sits under ('tally' while the tally sheet is up).
+function markTab(key) {
+  $$('#tabs .tab').forEach((t) => t.classList.toggle('active', (t.dataset.view || 'tally') === key));
+  moveTabInd();
+}
+function moveTabInd() {
+  const act = $('#tabs .tab.active'), ind = $('#tab-ind');
+  if (!act || !ind) return;
+  ind.style.width = act.offsetWidth + 'px';
+  ind.style.transform = `translateX(${act.offsetLeft}px)`;
 }
 
 function render() {
   if (state.view === 'closet') renderCloset();
   if (state.view === 'outfits') renderOutfits();
-  if (state.view === 'palette') renderPalette();
 }
 
 /* ------------------------------------------------------------------ closet view */
@@ -303,27 +359,23 @@ function totals() {
 function renderCloset() {
   const root = $('#view-closet');
   root.innerHTML = '';
-  const t = totals();
-  const maxN = Math.max(1, ...CAT_ORDER.map((c) => t.by[c].n));
-  const nLooks = state.outfits.length;
-  const tally = h(`<button class="tally" aria-label="Open the tally">
-      <div><div class="label">in your closet</div><div class="value">${t.n} piece${t.n === 1 ? '' : 's'}</div>
-      <div class="count">${nLooks ? `${nLooks} look${nLooks === 1 ? '' : 's'} styled` : 'no looks yet'}</div></div>
-      <div class="tally-bars">${CAT_ORDER.map((c) => `<i style="height:${8 + 36 * (t.by[c].n / maxN)}px"></i>`).join('')}</div>
-    </button>`);
-  press(tally, { tap: openTally, long: openTally });
-  root.append(tally);
 
-  // category chips
-  const chips = h('<div class="chips"></div>');
+  if (!state.items.length) {
+    const e = h(`<div class="empty"><h3>Your closet is empty</h3><button class="btn">${svg('plus')} Add a piece</button></div>`);
+    press($('.btn', e), { tap: () => openAdd() });
+    root.append(e);
+    return;
+  }
+
+  // categories
+  const chips = h('<div class="chips nav"></div>');
   const mk = (key, label) => {
-    const count = key === 'all' ? state.items.length : state.items.filter((i) => i.cat === key).length;
-    const c = h(`<button class="chip ${state.filterCat === key ? 'active' : ''}">${label}${count ? ` <span style="opacity:.5">${count}</span>` : ''}</button>`);
+    const c = h(`<button class="chip ${state.filterCat === key ? 'active' : ''}">${label}</button>`);
     press(c, {
       tap: () => { state.filterCat = key; state.filterSub = null; renderCloset(); },
       long: key === 'all' ? null : (e) => contextMenu(c, CATS[key].label, [
         { icon: 'plus', label: `Add ${CATS[key].label.toLowerCase()}`, run: () => openAdd({ cat: key }) },
-        { icon: 'look', label: 'Start a look with these', run: () => { state.filterCat = key; openEditor(); } },
+        { icon: 'look', label: 'New look', run: () => { state.filterCat = key; openEditor(); } },
       ], e),
       hapticTap: 'select',
     });
@@ -333,43 +385,32 @@ function renderCloset() {
   CAT_ORDER.forEach((k) => chips.append(mk(k, CATS[k].label)));
   root.append(chips);
 
-  const subs = h(`<div class="subchips ${state.filterCat !== 'all' ? 'open' : ''}"><div class="chips"></div></div>`);
-  if (state.filterCat !== 'all') {
-    const used = new Set(state.items.filter((i) => i.cat === state.filterCat).map((i) => i.sub).filter(Boolean));
-    const list = [...new Set([...CATS[state.filterCat].subs.filter((s) => used.has(s)), ...used])];
-    const row = $('.chips', subs);
-    if (!list.length) row.append(h('<span style="font-size:13px;color:var(--ink-3);padding:6px 4px">no subcategories yet</span>'));
-    list.forEach((s) => {
-      const c = h(`<button class="chip small ${state.filterSub === s ? 'active' : ''}">${esc(s)}</button>`);
-      press(c, { tap: () => { state.filterSub = state.filterSub === s ? null : s; renderCloset(); }, hapticTap: 'select' });
-      row.append(c);
-    });
-  }
+  // types within the chosen category (only those in use)
+  const used = state.filterCat === 'all' ? [] : [...new Set(state.items.filter((i) => i.cat === state.filterCat).map((i) => i.sub).filter(Boolean))];
+  const list = used.length ? [...new Set([...CATS[state.filterCat].subs.filter((s) => used.includes(s)), ...used])] : [];
+  const subs = h(`<div class="subchips ${list.length ? 'open' : ''}"><div class="chips"></div></div>`);
+  list.forEach((s) => {
+    const c = h(`<button class="chip small ${state.filterSub === s ? 'active' : ''}">${esc(s)}</button>`);
+    press(c, { tap: () => { state.filterSub = state.filterSub === s ? null : s; renderCloset(); }, hapticTap: 'select' });
+    $('.chips', subs).append(c);
+  });
   root.append(subs);
 
   const items = state.items
     .filter((i) => state.filterCat === 'all' || i.cat === state.filterCat)
     .filter((i) => !state.filterSub || i.sub === state.filterSub)
     .sort((a, b) => b.created - a.created);
-
-  if (!state.items.length) {
-    const e = h(`<div class="empty"><div class="orb"></div><h3>a quiet, empty closet</h3>
-      <p>Photograph a piece on a light, plain background — it’ll become a little sticker here.</p>
-      <button class="btn">${svg('plus')} add your first piece</button></div>`);
-    press($('.btn', e), { tap: () => openAdd() });
-    root.append(e);
-    return;
-  }
   if (!items.length) {
-    root.append(h('<div class="empty"><h3>nothing here yet</h3><p>Long-press a category to add straight into it.</p></div>'));
+    root.append(h('<div class="empty"><p>No pieces here yet</p></div>'));
     return;
   }
   const grid = h('<div class="grid"></div>');
   items.forEach((it, idx) => {
     const card = h(`<button class="piece" style="animation-delay:${Math.min(idx, 12) * 35}ms">
-      <img class="sticker" src="${it.sticker}" alt="${esc(it.name)}" loading="lazy" />
-      <div class="meta"><span class="name">${esc(it.name)}</span></div>
-      <div class="dots">${(it.colors || []).map((c) => `<i style="background:${c}"></i>`).join('')}</div></button>`);
+      <span class="tile"><img class="sticker" src="${it.sticker}" alt="" loading="lazy" /></span>
+      <span class="name">${esc(it.name)}</span>
+      <span class="kind">${esc(it.sub || CATS[it.cat]?.label || '')}</span>
+      <span class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</span></button>`);
     press(card, { tap: () => openDetail(it), long: (e) => itemMenu(it, card, e) });
     grid.append(card);
   });
@@ -378,9 +419,8 @@ function renderCloset() {
 
 function itemMenu(it, anchor, e) {
   contextMenu(anchor, it.name, [
-    { icon: 'edit', label: 'Edit details', run: () => openAdd({ item: it }) },
-    { icon: 'look', label: 'Style a look with this', run: () => openEditor(null, [it.id]) },
-    { icon: 'palette', label: 'Colours that match', run: () => { state.paletteBase = it.colors?.[0]; setView('palette'); } },
+    { icon: 'edit', label: 'Edit', run: () => openAdd({ item: it }) },
+    { icon: 'look', label: 'Style a look', run: () => openEditor(null, [it.id]) },
     { icon: 'copy', label: 'Duplicate', run: () => duplicateItem(it) },
     { icon: 'trash', label: 'Delete', danger: true, run: () => deleteItem(it) },
   ], e);
@@ -390,41 +430,125 @@ async function duplicateItem(it) {
   const copy = { ...it, id: uid(), created: Date.now(), name: it.name + ' (copy)' };
   await db.put('items', copy);
   state.items.push(copy);
-  haptic('success'); toast('duplicated');
+  haptic('success'); toast('Duplicated');
   render();
 }
 
 async function deleteItem(it) {
-  if (!(await confirmSheet('Let it go?', `“${it.name}” will be removed from your closet.`))) return;
+  if (!(await confirmSheet('Delete this piece?', it.name))) return;
   await db.del('items', it.id);
   state.items = state.items.filter((i) => i.id !== it.id);
-  toast('removed'); render();
+  toast('Deleted'); render();
 }
 
 /* ------------------------------------------------------------------ item detail */
 
 function openDetail(it) {
-  const outfitsWith = state.outfits.filter((o) => o.pieces.some((p) => p.itemId === it.id));
+  const cols = mainColors(it);
   const c = h(`<div>
     <div class="detail-img"><img src="${it.sticker}" alt="" /></div>
     <h2>${esc(it.name)}</h2>
-    <p class="sub">${esc(CATS[it.cat]?.label || '')}${it.sub ? ' · ' + esc(it.sub) : ''}</p>
-    <div class="kv">
-      <div><small>in looks</small><b>${outfitsWith.length}</b></div>
-      <div><small>added</small><b>${new Date(it.created).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</b></div>
-    </div>
-    <div class="field"><span class="field-label">colours</span><div class="swatches">${(it.colors || []).map((c) => `<button class="sw" data-c="${c}" style="background:${c}" aria-label="${colorName(c)}"></button>`).join('')}</div></div>
-    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="edit">${svg('edit')} Edit</button><button class="btn" data-a="look">${svg('look')} Style it</button></div>
-    <button class="btn ghost block" data-a="del">${svg('trash')} Delete</button>
+    <p class="sub kind">${esc(it.sub || CATS[it.cat]?.label || '')}</p>
+    ${cols.length ? `<div class="field"><div class="swatches">${cols.map((x) => `<span class="sw" style="background:${x}"></span>`).join('')}<span class="sw-names">${cols.map(colorName).join(', ')}</span></div></div>` : ''}
+    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="edit">Edit</button><button class="btn" data-a="look">Style</button></div>
+    <button class="btn ghost block" data-a="del">Delete</button>
   </div>`);
   const s = sheet(c);
-  $$('.sw', c).forEach((b) => press(b, {
-    tap: () => toast(`${colorName(b.dataset.c)} · ${b.dataset.c}`),
-    long: () => { s.close(); state.paletteBase = b.dataset.c; setView('palette'); },
-  }));
   press($('[data-a=edit]', c), { tap: () => { s.close(); openAdd({ item: it }); } });
   press($('[data-a=look]', c), { tap: () => { s.close(); openEditor(null, [it.id]); } });
   press($('[data-a=del]', c), { tap: () => { s.close(); deleteItem(it); } });
+}
+
+/* ------------------------------------------------------------------ cut-out editor (shared) */
+
+const TOL_MIN = 6, TOL_MAX = 110;
+const CUT_V = 2; // version of the remover a saved strength belongs to
+
+/**
+ * The background-remover controls: preview, "remove background" switch, tap-to-erase, undo and the
+ * strength slider. Used by the one-piece form and by bulk upload.
+ * `cut` ({ raster, tolerance, seeds, removeBg, result }) is edited in place. Nothing is re-cut until
+ * a control is used, so an existing sticker stays exactly as it was.
+ */
+function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
+  let mask = null, erasing = false, timer = null, run = 0;
+  const el = h(`<div><div class="stage"><div class="busy"><div class="spinner"></div></div></div>
+    <div class="stage-tools">
+      <button class="chip" data-a="bg"><span class="switch ${cut.removeBg ? 'on' : ''}" style="transform:scale(.7);margin:-6px -4px"></span>remove background</button>
+      <button class="chip" data-a="erase">${svg('eraser')} tap to erase</button>
+      <button class="chip" data-a="undo">${svg('undo')} undo</button>
+    </div>
+    <div class="slider-row" data-a="tol-row"><span>gentle</span><input type="range" min="${TOL_MIN}" max="${TOL_MAX}" value="${Math.min(TOL_MAX, Math.max(TOL_MIN, cut.tolerance))}" aria-label="Background removal strength" /><span>strong</span></div></div>`);
+  host.innerHTML = '';
+  host.append(el);
+  extraTools.forEach((t) => $('.stage-tools', el).append(t));
+  const stage = $('.stage', el), bgBtn = $('[data-a=bg]', el), eraseBtn = $('[data-a=erase]', el), range = $('input[type=range]', el);
+
+  function syncTools() {
+    eraseBtn.style.display = cut.removeBg ? '' : 'none';
+    $('[data-a=undo]', el).style.display = cut.removeBg ? '' : 'none';
+    $('[data-a=tol-row]', el).style.display = cut.removeBg ? '' : 'none';
+    if (!cut.removeBg) { erasing = false; eraseBtn.classList.remove('active'); }
+  }
+  function show() {
+    stage.classList.toggle('erasing', erasing);
+    $$('img, canvas', stage).forEach((n) => n.remove());
+    if (erasing && mask) stage.prepend(renderMaskPreview(cut.raster, mask));
+    else if (cut.result) stage.prepend(h(`<img src="${cut.result.dataURL}" alt="" />`));
+  }
+  async function process() {
+    if (!cut.raster) return;
+    const mine = ++run;
+    stage.classList.add('loading');
+    await pause(30); // let the spinner paint before the heavy work
+    if (mine !== run) return; // a newer change superseded this one
+    mask = computeMask(cut.raster, cut.tolerance, cut.seeds);
+    cut.result = renderSticker(cut.raster, mask, { removeBg: cut.removeBg });
+    stage.classList.remove('loading');
+    show();
+    onChange?.(cut);
+  }
+
+  press(bgBtn, { tap: () => { cut.removeBg = !cut.removeBg; $('.switch', bgBtn).classList.toggle('on', cut.removeBg); syncTools(); process(); } });
+  press(eraseBtn, {
+    tap: async () => {
+      erasing = !erasing;
+      eraseBtn.classList.toggle('active', erasing);
+      if (erasing) {
+        toast('Tap leftover background');
+        if (!mask) { await process(); return; } // first use on an untouched sticker
+      }
+      show();
+    },
+    long: () => { cut.seeds.length = 0; toast('Cleared'); process(); },
+  });
+  press($('[data-a=undo]', el), { tap: () => { if (cut.seeds.length) { cut.seeds.pop(); process(); } else toast('Nothing to undo'); } });
+  let lastTick = cut.tolerance;
+  range.addEventListener('input', () => {
+    cut.tolerance = +range.value;
+    if (Math.abs(cut.tolerance - lastTick) >= 5) { haptic('light'); lastTick = cut.tolerance; }
+    clearTimeout(timer); timer = setTimeout(() => { timer = null; process(); }, 140);
+  });
+  stage.addEventListener('click', (e) => {
+    if (!erasing || !cut.removeBg) return;
+    const target = $('canvas', stage);
+    if (!target) return;
+    const r = target.getBoundingClientRect();
+    const nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height;
+    if (nx < 0 || ny < 0 || nx > 1 || ny > 1) return;
+    haptic('select');
+    cut.seeds.push([nx, ny]);
+    process();
+  });
+  syncTools();
+  show();
+  return {
+    process, show,
+    pending: () => timer !== null,
+    cancel: () => { clearTimeout(timer); timer = null; },
+    // run a re-cut that is still waiting on the slider, so what is saved matches what is set
+    settle: async () => { if (timer !== null) { clearTimeout(timer); timer = null; await process(); } },
+  };
 }
 
 /* ------------------------------------------------------------------ add / edit flow */
@@ -433,24 +557,33 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   const st = {
     original: item?.original || null,
     raster: null,
-    tolerance: item?.cut?.tolerance ?? 32,
+    // strengths saved by the earlier remover were on a different scale, so those start from today's default
+    tolerance: item?.cut?.v === CUT_V ? item.cut.tolerance : DEFAULT_TOLERANCE,
     seeds: item?.cut?.seeds ? [...item.cut.seeds] : [],
     removeBg: item?.cut?.removeBg ?? true,
-    erasing: false,
     result: item ? { dataURL: item.sticker, colors: item.colors } : null,
     cat: item?.cat || cat || (state.filterCat !== 'all' ? state.filterCat : 'top'),
     sub: item?.sub || (state.filterSub ?? null),
-    name: item?.name || '',
+    // a name the app generated stays automatic, so it follows later category / type changes
+    name: item && item.name !== autoName(item.colors, item.cat, item.sub) ? item.name : '',
     price: item?.price ?? '',
     customSubs: [],
   };
 
   const c = h(`<div>
-    <div class="sheet-head"><h2>${item ? 'edit piece' : 'new piece'}</h2></div>
+    <div class="sheet-head"><h2>${item ? 'Edit piece' : 'New piece'}</h2></div>
     <div data-step="photo"></div>
     <div data-step="details"></div>
   </div>`);
   const s = sheet(c);
+  // swipe, scrim tap and Escape all ask first once there is a photo or a change to lose
+  const sig = () => JSON.stringify([st.original === (item?.original || null), st.cat, st.sub, st.name, st.price, st.tolerance, st.removeBg, st.seeds]);
+  const clean = sig();
+  s.dismiss = async () => {
+    if (sig() !== clean && !(await confirmSheet(item ? 'Discard changes?' : 'Discard this piece?', '', 'Discard'))) return;
+    s.close();
+  };
+  let editor = null;
 
   const photo = $('[data-step=photo]', c);
   const details = $('[data-step=details]', c);
@@ -459,11 +592,10 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     photo.innerHTML = '';
     const p = h(`<div class="pick">
       <div class="pick-btns">
-        <button class="btn" data-a="cam">${svg('camera')}<span>take photo</span></button>
-        <button class="btn soft" data-a="lib">${svg('image')}<span>choose photos</span></button>
+        <button class="btn" data-a="cam">${svg('camera')}<span>Take photo</span></button>
+        <button class="btn soft" data-a="lib">${svg('image')}<span>Choose photos</span></button>
       </div>
-      <div class="tip"><span class="sun">${svg('sun')}</span><span><b>For the cleanest cut-out</b>, lay the piece flat on a light, plain background (a bedsheet, floor or wall), in soft even light, with a little space around it.</span></div>
-      <div class="tip many"><span class="sun">${svg('look')}</span><span><b>Adding lots?</b> Choose several photos at once and they’ll all be cut out and added together.</span></div>
+      <p class="pick-hint">Use a light, plain background</p>
     </div>`);
     press($('[data-a=cam]', p), { tap: () => pickFile('camera') });
     press($('[data-a=lib]', p), { tap: () => pickFile('library') });
@@ -493,104 +625,37 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   async function useFile(f) {
     let shot;
     try { shot = await photoFromFile(f); } catch {
-      haptic('warning'); toast('that photo could not be read');
+      haptic('warning'); toast('Photo could not be read');
       if (!st.raster && !item) renderPick();
       return;
     }
     st.original = shot.original;
     st.raster = shot.raster;
     st.seeds = [];
-    renderStage();
-    await process();
+    st.result = null;
+    await renderStage().process();
     renderDetails();
   }
 
-  let stageEl, busyTimer;
   function renderStage() {
-    photo.innerHTML = '';
-    stageEl = h(`<div><div class="stage"><div class="busy"><div class="spinner"></div></div></div>
-      <div class="stage-tools">
-        <button class="chip" data-a="bg"><span class="switch ${st.removeBg ? 'on' : ''}" style="transform:scale(.7);margin:-6px -4px"></span>remove background</button>
-        <button class="chip" data-a="erase">${svg('eraser')} tap to erase</button>
-        <button class="chip" data-a="undo">${svg('undo')} undo</button>
-        <button class="chip" data-a="re">${svg('image')} new photo</button>
-      </div>
-      <div class="slider-row" data-a="tol-row"><span>gentle</span><input type="range" min="6" max="80" value="${st.tolerance}" /><span>strong</span></div></div>`);
-    photo.append(stageEl);
-    const stage = $('.stage', stageEl);
-    const bgBtn = $('[data-a=bg]', stageEl);
-    press(bgBtn, { tap: async () => { st.removeBg = !st.removeBg; $('.switch', bgBtn).classList.toggle('on', st.removeBg); syncTools(); await process(); } });
-    const eraseBtn = $('[data-a=erase]', stageEl);
-    press(eraseBtn, {
-      tap: () => { st.erasing = !st.erasing; eraseBtn.classList.toggle('active', st.erasing); if (st.erasing) toast('tap any leftover background'); showStage(); },
-      long: async () => { st.seeds = []; toast('erase marks cleared'); await process(); },
-    });
-    press($('[data-a=undo]', stageEl), { tap: async () => { if (st.seeds.length) { st.seeds.pop(); await process(); } else toast('nothing to undo'); } });
-    press($('[data-a=re]', stageEl), { tap: () => pickFile('library'), long: (e) => contextMenu($('[data-a=re]', stageEl), 'new photo', [
+    const re = h(`<button class="chip" data-a="re">${svg('image')} new photo</button>`);
+    press(re, { tap: () => pickFile('library'), long: (e) => contextMenu(re, 'New photo', [
       { icon: 'camera', label: 'Take photo', run: () => pickFile('camera') },
       { icon: 'image', label: 'Choose photo', run: () => pickFile('library') },
     ], e) });
-    const range = $('input[type=range]', stageEl);
-    let lastTick = 0;
-    range.addEventListener('input', () => {
-      st.tolerance = +range.value;
-      if (Math.abs(st.tolerance - lastTick) >= 4) { haptic('light'); lastTick = st.tolerance; }
-      clearTimeout(busyTimer); busyTimer = setTimeout(process, 140);
-    });
-    stage.addEventListener('click', async (e) => {
-      if (!st.erasing || !st.removeBg) return;
-      const target = $('canvas', stage);
-      if (!target) return;
-      const r = target.getBoundingClientRect();
-      const nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height;
-      if (nx < 0 || ny < 0 || nx > 1 || ny > 1) return;
-      haptic('select');
-      st.seeds.push([nx, ny]);
-      await process();
-    });
-    syncTools();
-  }
-  function syncTools() {
-    if (!stageEl) return;
-    $('[data-a=erase]', stageEl).style.display = st.removeBg ? '' : 'none';
-    $('[data-a=undo]', stageEl).style.display = st.removeBg ? '' : 'none';
-    $('[data-a=tol-row]', stageEl).style.display = st.removeBg ? '' : 'none';
-    if (!st.removeBg) { st.erasing = false; $('[data-a=erase]', stageEl).classList.remove('active'); }
-  }
-
-  let mask = null;
-  async function process() {
-    if (!st.raster) return;
-    const stage = $('.stage', stageEl);
-    stage.classList.add('loading');
-    await new Promise((r) => setTimeout(r, 30));
-    mask = computeMask(st.raster, st.tolerance, st.seeds);
-    st.result = renderSticker(st.raster, mask, { removeBg: st.removeBg });
-    stage.classList.remove('loading');
-    showStage();
-    syncSwatches();
-  }
-  function showStage() {
-    const stage = $('.stage', stageEl);
-    stage.classList.toggle('erasing', st.erasing);
-    $$('img, canvas', stage).forEach((n) => n.remove());
-    if (st.erasing && mask) {
-      const cv = renderMaskPreview(st.raster, mask);
-      stage.prepend(cv);
-    } else if (st.result) {
-      stage.prepend(h(`<img src="${st.result.dataURL}" alt="" />`));
-    }
+    editor = mountCutout(photo, st, { onChange: syncSwatches, extraTools: [re] });
+    return editor;
   }
 
   function renderDetails() {
     details.innerHTML = '';
     const d = h(`<div>
-      <div class="field"><label>category</label><div class="seg">${CAT_ORDER.map((k) => `<button data-cat="${k}" class="${st.cat === k ? 'active' : ''}">${svg(k)}${CATS[k].label}</button>`).join('')}</div></div>
-      <div class="field"><label>type</label><div class="wrap-chips" data-subs></div></div>
-      <div class="field"><label>name</label><input class="input" data-name placeholder="e.g. Linen shirt" value="${esc(st.name)}" maxlength="40" /></div>
-      ${item ? '' : `<div class="field"><label>price <span style="text-transform:none;letter-spacing:0">(optional — or add it later in the tally)</span></label><div class="price-wrap"><span>${esc(state.settings.currency)}</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
-      <div class="field"><label>colours found</label><div class="swatches" data-sw></div></div>
-      <button class="btn sage block" data-a="save">${svg('check')} ${item ? 'save changes' : 'add to closet'}</button>
+      <div class="field"><label>Category</label><div class="seg">${CAT_ORDER.map((k) => `<button data-cat="${k}" class="${st.cat === k ? 'active' : ''}">${svg(k)}${CATS[k].label}</button>`).join('')}</div></div>
+      <div class="field"><label>Type</label><div class="wrap-chips" data-subs></div></div>
+      <div class="field"><label>Name</label><input class="input" data-name placeholder="Name" value="${esc(st.name)}" maxlength="40" /></div>
+      ${item ? '' : `<div class="field"><label>Price (optional)</label><div class="price-wrap"><span>${esc(state.settings.currency)}</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
+      <div class="field"><label>Colours</label><div class="swatches" data-sw></div></div>
+      <button class="btn sage block" data-a="save">${item ? 'Save' : 'Add to closet'}</button>
     </div>`);
     details.append(d);
     $$('[data-cat]', d).forEach((b) => press(b, { tap: () => {
@@ -621,57 +686,67 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       press(b, { tap: () => { st.sub = st.sub === sname ? null : sname; renderSubs(); }, hapticTap: 'select' });
       wrap.append(b);
     });
-    const add = h('<button class="chip small add">+ custom</button>');
+    const add = h('<button class="chip small add">Custom</button>');
     press(add, { tap: () => {
-      const inp = h('<input class="input" style="height:34px;width:140px;border-radius:999px;font-size:14px" placeholder="type & enter" maxlength="20" />');
+      const inp = h('<input class="input" style="height:34px;width:140px;font-size:14px" placeholder="Type" maxlength="20" />');
       add.replaceWith(inp); inp.focus();
       const done = () => { const v = inp.value.trim(); if (v) { st.customSubs.push(v); st.sub = v; } renderSubs(); };
       inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(); });
       inp.addEventListener('blur', done);
     } });
     wrap.append(add);
+    syncNameHint();
+  }
+
+  // the name box hints at the name the piece gets if it is left empty
+  function syncNameHint() {
+    const name = $('[data-name]', details);
+    if (name) name.placeholder = autoName(st.result?.colors, st.cat, st.sub);
   }
 
   function syncSwatches() {
+    syncNameHint();
     const sw = $('[data-sw]', details);
     if (!sw || !st.result) return;
-    sw.innerHTML = (st.result.colors || []).map((c) => `<span class="sw" style="background:${c}" title="${colorName(c)}"></span>`).join('') +
-      `<span style="align-self:center;font-size:13px;color:var(--ink-2);margin-left:4px">${(st.result.colors || []).map(colorName).join(', ')}</span>`;
+    const cols = mainColors(st.result);
+    sw.innerHTML = cols.map((c) => `<span class="sw" style="background:${c}"></span>`).join('') + `<span class="sw-names">${cols.map(colorName).join(', ')}</span>`;
   }
 
   async function save() {
-    if (!st.result) { haptic('warning'); toast('add a photo first'); return; }
-    const colors = st.result.colors || [];
+    await editor?.settle();
+    if (!st.result) { haptic('warning'); toast('Add a photo first'); return; }
+    const colors = mainColors(st.result);
     const rec = {
       id: item?.id || uid(),
       created: item?.created || Date.now(),
       name: (st.name || '').trim() || autoName(colors, st.cat, st.sub),
       cat: st.cat, sub: st.sub,
-      price: parsePrice(st.price),
+      price: item ? (item.price ?? null) : parsePrice(st.price), // editing never touches the price
       sticker: st.result.dataURL,
       colors,
       original: st.original,
-      cut: { tolerance: st.tolerance, seeds: st.seeds, removeBg: st.removeBg },
+      cut: { v: CUT_V, tolerance: st.tolerance, seeds: st.seeds, removeBg: st.removeBg },
     };
     await db.put('items', rec);
     const i = state.items.findIndex((x) => x.id === rec.id);
     if (i >= 0) state.items[i] = rec; else state.items.push(rec);
     imgCache.delete(rec.id);
     haptic('success');
-    toast(item ? 'saved' : 'added to your closet');
+    toast(item ? 'Saved' : 'Added');
     s.close();
     if (state.view !== 'closet') setView('closet'); else render();
   }
 
-  if (source) { renderStage(); await useFile(source); }
-  else if (item?.original) {
-    const img = await loadImage(item.original);
-    st.raster = rasterize(img, 900);
-    renderStage();
-    await process();
+  if (source) {
+    photo.innerHTML = '<div class="stage loading"><div class="busy"><div class="spinner"></div></div></div>';
+    await useFile(source);
+  } else if (item?.original) {
+    // the saved sticker is shown as it is; it is only cut again if one of the cut-out controls is used
+    try { st.raster = rasterize(await loadImage(item.original), 900); } catch { /* keep the sticker */ }
+    if (st.raster) renderStage(); else photo.innerHTML = `<div class="stage"><img src="${item.sticker}" alt="" /></div>`;
     renderDetails();
   } else if (item) {
-    // legacy item without original: show sticker only
+    // older piece without its photo: show the sticker only
     photo.innerHTML = `<div class="stage"><img src="${item.sticker}" alt="" /></div>`;
     renderDetails();
   } else renderPick();
@@ -680,15 +755,16 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
 /* ------------------------------------------------------------------ batch add */
 
 const BATCH_MAX = 30;
-const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Several photos picked at once: cut them all out, ask only "what is it?" for each, add them together. */
 function openBatch(files, presetCat = null) {
-  const images = files.filter((f) => !f.type || f.type.startsWith('image/'));
-  const overflow = Math.max(0, images.length - BATCH_MAX);
-  // status: wait → busy → done | fail (unreadable) | gone (removed by hand or already saved)
-  const entries = images.slice(0, BATCH_MAX).map((file) => ({ file, status: 'wait', cat: presetCat, result: null, original: null, el: null }));
-  let failed = files.length - images.length, cancelled = false, saving = false;
+  const overflow = Math.max(0, files.length - BATCH_MAX);
+  // status: wait → busy → done | fail (could not be decoded) | gone (removed by hand or already saved)
+  const entries = files.slice(0, BATCH_MAX).map((file) => ({
+    file, status: 'wait', cat: presetCat, result: null, original: null, el: null, shown: null, redo: false,
+    cut: { tolerance: DEFAULT_TOLERANCE, seeds: [], removeBg: true },
+  }));
+  let failed = 0, cancelled = false, saving = false, pumping = false, tuning = false;
 
   const c = h(`<div class="batch">
     <div class="editor-top">
@@ -696,11 +772,11 @@ function openBatch(files, presetCat = null) {
       <h2 data-title></h2>
     </div>
     <div class="batch-progress"><div class="bar"><i data-bar></i></div><span data-status></span></div>
-    <div class="batch-all"><span class="field-label">they’re all</span><div class="chips">${CAT_ORDER.map((k) => `<button class="chip small" data-all="${k}">${CATS[k].label}</button>`).join('')}</div></div>
+    <div class="batch-all" role="group" aria-label="Set every photo at once"><span class="field-label">Set all</span><div class="chips">${CAT_ORDER.map((k) => `<button class="chip small" data-all="${k}" aria-label="All ${CATS[k].label.toLowerCase()}" aria-pressed="false">${CATS[k].label}</button>`).join('')}</div></div>
     <div class="batch-list" data-list></div>
     <div class="batch-foot">
       <button class="btn block" data-a="save"></button>
-      <p class="batch-hint">names are filled in for you · edit any piece later</p>
+      <p class="batch-hint">Tap a photo to fix its cut-out</p>
     </div>
   </div>`);
   const s = sheet(c, { full: true });
@@ -711,8 +787,9 @@ function openBatch(files, presetCat = null) {
   function paint(e) {
     if (e.status === 'fail' || e.status === 'gone') { e.el?.remove(); e.el = null; return; }
     if (!e.el) {
-      e.el = h(`<div class="batch-row">
-        <div class="b-thumb"><div class="spinner"></div></div>
+      const n = entries.indexOf(e) + 1;
+      e.el = h(`<div class="batch-row" role="group" aria-label="Photo ${n} of ${entries.length}">
+        <button class="b-thumb" aria-label="Fix the cut-out of photo ${n}"><div class="spinner"></div><span class="b-tune">${svg('tune')}</span></button>
         <div class="b-main">
           <div class="b-cats">${CAT_ORDER.map((k) => `<button data-cat="${k}" aria-label="${CATS[k].label}" title="${CATS[k].label}">${svg(k)}</button>`).join('')}</div>
           <div class="b-name"></div>
@@ -720,23 +797,28 @@ function openBatch(files, presetCat = null) {
         <button class="b-x" aria-label="Remove this photo">${svg('close')}</button>
       </div>`);
       $$('[data-cat]', e.el).forEach((b) => press(b, {
-        tap: () => { e.cat = b.dataset.cat; paint(e); sync(); },
-        long: () => setAll(b.dataset.cat), // long-press = this category for every photo
+        tap: () => { if (saving) return; e.cat = b.dataset.cat; paint(e); sync(); },
         hapticTap: 'select',
       }));
+      press($('.b-thumb', e.el), { tap: () => tune(e), hapticTap: 'select' });
       press($('.b-x', e.el), { tap: () => drop(e) });
       listEl.append(e.el);
     }
-    if (e.status === 'done' && !$('img', e.el)) $('.b-thumb', e.el).innerHTML = `<img src="${e.result.dataURL}" alt="" />`;
+    if (e.result && e.shown !== e.result.dataURL) {
+      $('.b-thumb img', e.el)?.remove();
+      $('.b-thumb', e.el).prepend(h(`<img src="${e.result.dataURL}" alt="" />`));
+      e.shown = e.result.dataURL;
+    }
     e.el.classList.toggle('busy', e.status === 'busy');
+    e.el.classList.toggle('ready', e.status === 'done');
     e.el.classList.toggle('todo', !e.cat);
     $$('[data-cat]', e.el).forEach((b) => {
       b.classList.toggle('active', b.dataset.cat === e.cat);
       b.setAttribute('aria-pressed', String(b.dataset.cat === e.cat));
     });
-    $('.b-name', e.el).textContent = !e.cat ? 'what is it?'
-      : e.status === 'done' ? autoName(e.result.colors, e.cat, null)
-      : CATS[e.cat].label.toLowerCase();
+    $('.b-name', e.el).textContent = !e.cat ? 'Choose a category'
+      : e.result ? autoName(e.result.colors, e.cat, null)
+      : CATS[e.cat].label;
   }
 
   function sync() {
@@ -744,31 +826,88 @@ function openBatch(files, presetCat = null) {
     const done = l.filter((e) => e.status === 'done').length, cutting = l.length - done;
     const missing = l.filter((e) => !e.cat).length;
     const pieces = `${l.length} piece${l.length === 1 ? '' : 's'}`;
-    $('[data-title]', c).textContent = `add ${pieces}`;
+    $('[data-title]', c).textContent = 'New pieces';
     $('[data-bar]', c).style.width = `${l.length ? (done / l.length) * 100 : 100}%`;
     const notes = [];
-    if (failed) notes.push(`${failed} couldn’t be read`);
+    if (failed) notes.push(`${failed} unreadable`);
     if (overflow) notes.push(`first ${BATCH_MAX} only`);
-    $('[data-status]', c).textContent = [cutting ? `cutting out ${Math.min(done + 1, l.length)} of ${l.length}` : 'all cut out', ...notes].join(' · ');
+    $('[data-status]', c).textContent = [cutting ? `${Math.min(done + 1, l.length)} of ${l.length}` : 'Ready', ...notes].join(', ');
     const btn = $('[data-a=save]', c);
-    btn.className = `btn block ${!cutting && !missing ? 'sage' : 'soft'}`;
-    btn.innerHTML = missing ? `pick a category for ${missing === l.length ? (l.length === 1 ? 'it' : 'each one') : `${missing} more`}`
-      : cutting ? 'cutting out…'
-      : `${svg('check')} add ${pieces} to closet`;
+    btn.className = `btn block ${!cutting && !missing && !saving ? 'sage' : 'soft'}`;
+    btn.innerHTML = saving ? 'Adding' : missing ? `Choose ${missing} categor${missing === 1 ? 'y' : 'ies'}`
+      : cutting ? 'Cutting out'
+      : `Add ${pieces}`;
     $('.batch-all', c).style.display = l.length > 1 ? '' : 'none';
-    $$('[data-all]', c).forEach((b) => b.classList.toggle('active', l.length > 0 && l.every((e) => e.cat === b.dataset.all)));
+    $$('[data-all]', c).forEach((b) => {
+      const on = l.length > 0 && l.every((e) => e.cat === b.dataset.all);
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
   }
 
   function setAll(cat) {
+    if (saving) return;
     live().forEach((e) => { e.cat = cat; paint(e); });
     sync();
-    toast(`all set to ${CATS[cat].label.toLowerCase()}`);
+    toast(`All ${CATS[cat].label.toLowerCase()}`);
   }
 
   function drop(e) {
+    if (saving) return;
     e.status = 'gone'; e.file = null; e.result = null; e.original = null;
     paint(e); sync();
-    if (!live().length) { cancelled = true; s.close(); toast('nothing left to add'); }
+    if (!live().length) { cancelled = true; s.close(); toast('Nothing to add'); }
+  }
+
+  // The same cut-out editor as the one-piece form, for one photo of the batch.
+  async function tune(e) {
+    if (saving || tuning) return;
+    if (e.status !== 'done') { toast('Still cutting out'); return; }
+    tuning = true; // one editor at a time, also while the photo is being reopened
+    let raster;
+    try { raster = rasterize(await loadImage(e.original), 900); } catch { tuning = false; toast('Photo could not be opened'); return; }
+    if (e.status !== 'done' || saving) { tuning = false; return; }
+    const cut = { raster, tolerance: e.cut.tolerance, seeds: [...e.cut.seeds], removeBg: e.cut.removeBg, result: e.result };
+    let changed = false, ed = null;
+    const t = h(`<div class="tuner"><h2>Fix cut-out</h2>
+      <div data-ed></div>
+      <div class="row-btns">${live().length > 1 ? '<button class="btn soft" data-a="all">Use for all</button>' : ''}<button class="btn sage" data-a="ok">Done</button></div>
+    </div>`);
+    const ts = sheet(t, { onClose: () => {
+      tuning = false;
+      if (e.status !== 'done') return;
+      if (ed.pending()) {
+        // the slider moved but its re-cut had not run yet: cut this photo again with the new settings
+        ed.cancel();
+        e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg };
+        e.status = 'wait'; paint(e); sync(); pump();
+        return;
+      }
+      if (!changed) return;
+      e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg };
+      e.result = cut.result;
+      paint(e); sync();
+    } });
+    ed = mountCutout($('[data-ed]', t), cut, { onChange: () => { changed = true; } });
+    mountCutout($('[data-ed]', t), cut, { onChange: () => { changed = true; } });
+    press($('[data-a=ok]', t), { tap: async () => { await ed.settle(); ts.close(); } });
+    const all = $('[data-a=all]', t);
+    if (all) press(all, { tap: () => {
+      // same strength (and background on/off) for every photo; each keeps its own erase marks
+      const tol = cut.tolerance, rb = cut.removeBg;
+      changed = false; // everything, this photo included, is cut again below
+      ed.cancel();
+      e.cut = { tolerance: tol, seeds: cut.seeds, removeBg: rb };
+      ts.close();
+      live().forEach((x) => {
+        x.cut.tolerance = tol; x.cut.removeBg = rb;
+        if (x.status === 'done') x.status = 'wait';
+        else if (x.status === 'busy') x.redo = true;
+      });
+      entries.forEach(paint); sync();
+      toast('Cutting all photos again');
+      pump();
+    } });
   }
 
   async function save() {
@@ -782,18 +921,22 @@ function openBatch(files, presetCat = null) {
       first.el.classList.remove('nudge'); void first.el.offsetWidth; first.el.classList.add('nudge');
       return;
     }
-    if (l.some((e) => e.status !== 'done')) { haptic('warning'); toast('still cutting out — one moment'); return; }
-    saving = true;
+    if (l.some((e) => e.status !== 'done')) { haptic('warning'); toast('Still cutting out'); return; }
+    saving = true; sync();
     const now = Date.now();
+    // every record is built up front, so nothing the user taps while it saves can change the batch
+    const recs = l.map((e, i) => ({
+      e,
+      rec: {
+        id: uid(), created: now + i,
+        name: autoName(e.result.colors, e.cat, null), cat: e.cat, sub: null, price: null,
+        sticker: e.result.dataURL, colors: mainColors(e.result),
+        original: e.original, cut: { v: CUT_V, tolerance: e.cut.tolerance, seeds: e.cut.seeds, removeBg: e.cut.removeBg },
+      },
+    }));
     let added = 0;
     try {
-      for (const e of l) {
-        const rec = {
-          id: uid(), created: now + added,
-          name: autoName(e.result.colors, e.cat, null), cat: e.cat, sub: null, price: null,
-          sticker: e.result.dataURL, colors: e.result.colors || [],
-          original: e.original, cut: { tolerance: 32, seeds: [], removeBg: true },
-        };
+      for (const { e, rec } of recs) {
         await db.put('items', rec);
         state.items.push(rec);
         e.status = 'gone'; added++;
@@ -807,13 +950,13 @@ function openBatch(files, presetCat = null) {
     }
     if (added < l.length) {
       haptic('warning');
-      toast(added ? `storage is full — added ${added} of ${l.length}` : 'storage is full — nothing was added');
+      toast(added ? `Storage full. Added ${added} of ${l.length}` : 'Storage full. Nothing added');
       entries.forEach(paint); sync(); render();
       return;
     }
     cancelled = true;
     haptic('success');
-    toast(`${added} piece${added === 1 ? '' : 's'} added to your closet`);
+    toast(`${added} piece${added === 1 ? '' : 's'} added`);
     s.close();
     if (state.view !== 'closet') setView('closet'); else render();
   }
@@ -821,7 +964,7 @@ function openBatch(files, presetCat = null) {
   async function tryClose() {
     if (saving) return;
     const n = live().length;
-    if (n && !(await confirmSheet('Leave these behind?', `None of the ${n} photo${n === 1 ? '' : 's'} will be added.`, 'Discard'))) return;
+    if (n && !(await confirmSheet('Discard these photos?', '', 'Discard'))) return;
     cancelled = true;
     s.close();
   }
@@ -831,47 +974,59 @@ function openBatch(files, presetCat = null) {
   press($('[data-a=save]', c), { tap: save, hapticTap: null });
   $$('[data-all]', c).forEach((b) => press(b, { tap: () => setAll(b.dataset.all), hapticTap: 'select' }));
 
-  entries.forEach(paint);
-  sync();
-  if (overflow) toast(`adding the first ${BATCH_MAX} — do the rest in another go`);
-
-  // cut the photos out one at a time, yielding between them so the sheet stays responsive
-  (async () => {
-    for (const e of entries) {
-      if (cancelled) return;
-      if (e.status !== 'wait') continue;
-      e.status = 'busy'; paint(e); sync();
-      await pause(40);
-      try {
-        const shot = await photoFromFile(e.file);
+  // Cuts waiting photos out one at a time, yielding between them so the sheet stays responsive.
+  // Also used to cut photos again after "use for all photos".
+  async function pump() {
+    if (pumping) return;
+    pumping = true;
+    try {
+      for (;;) {
         if (cancelled) return;
-        if (e.status === 'gone') continue;
-        const mask = computeMask(shot.raster, 32, []);
-        e.result = renderSticker(shot.raster, mask, { removeBg: true });
-        e.original = shot.original;
-        e.status = 'done';
-      } catch {
-        if (e.status === 'gone') continue;
-        e.status = 'fail'; failed++;
+        const e = entries.find((x) => x.status === 'wait');
+        if (!e) break;
+        e.status = 'busy'; paint(e); sync();
+        await pause(40);
+        if (e.status === 'gone') continue; // removed while waiting
+        try {
+          let raster;
+          if (e.file) {
+            const shot = await photoFromFile(e.file);
+            e.original = shot.original; raster = shot.raster; e.file = null;
+          } else raster = rasterize(await loadImage(e.original), 900);
+          if (cancelled) return;
+          if (e.status === 'gone') continue;
+          const mask = computeMask(raster, e.cut.tolerance, e.cut.seeds);
+          e.result = renderSticker(raster, mask, { removeBg: e.cut.removeBg });
+          // "use for all" may have changed the strength while this one was being cut
+          if (e.redo) { e.redo = false; e.status = 'wait'; } else e.status = 'done';
+        } catch {
+          if (e.status === 'gone') continue;
+          e.status = 'fail'; e.file = null; failed++;
+        }
+        paint(e); sync();
       }
-      e.file = null;
-      paint(e); sync();
-    }
+    } finally { pumping = false; }
     if (!cancelled && !live().length) {
       cancelled = true;
-      haptic('warning'); toast('none of those photos could be read');
+      // close anything stacked on top first (the "Leave these behind?" question would be left dangling)
+      while (stack.includes(s) && stack[stack.length - 1] !== s) stack[stack.length - 1].close();
+      haptic('warning'); toast('No photos could be read');
       s.close();
     }
-  })();
+  }
+
+  entries.forEach(paint);
+  sync();
+  if (overflow) toast(`First ${BATCH_MAX} photos only`);
+  pump();
 }
 
 /* ------------------------------------------------------------------ outfits view */
 
 function outfitColors(o) {
   const out = [];
-  for (const p of o.pieces) {
-    const c = itemById(p.itemId)?.colors?.[0];
-    if (c && out.every((x) => closeness(x, c) < 0.85)) out.push(c);
+  for (const p of o.pieces) for (const c of mainColors(itemById(p.itemId))) {
+    if (out.length < 8 && out.every((x) => closeness(x, c) < 0.85)) out.push(c);
   }
   return out;
 }
@@ -880,8 +1035,8 @@ function renderOutfits() {
   const root = $('#view-outfits');
   root.innerHTML = '';
   const grid = h('<div class="looks"></div>');
-  const nw = h(`<button class="look new"><div><div class="plus">${svg('plus')}</div><span>new look</span></div></button>`);
-  press(nw, { tap: () => openEditor(), long: (e) => contextMenu(nw, 'new look', [
+  const nw = h(`<button class="look new"><div><div class="plus">${svg('plus')}</div><span>New look</span></div></button>`);
+  press(nw, { tap: () => openEditor(), long: (e) => contextMenu(nw, 'New look', [
     { icon: 'sparkle', label: 'Surprise me', run: () => surpriseLook() },
     { icon: 'look', label: 'Blank board', run: () => openEditor() },
   ], e) });
@@ -900,22 +1055,19 @@ function renderOutfits() {
         await db.put('outfits', copy); state.outfits.push(copy); haptic('success'); renderOutfits();
       } },
       { icon: 'trash', label: 'Delete', danger: true, run: async () => {
-        if (!(await confirmSheet('Delete this look?', `“${o.name}” will be gone, your pieces stay.`))) return;
+        if (!(await confirmSheet('Delete this look?', o.name))) return;
         await db.del('outfits', o.id); state.outfits = state.outfits.filter((x) => x.id !== o.id); renderOutfits();
       } },
     ], e) });
     grid.append(card);
   });
   root.append(grid);
-  if (!state.outfits.length) {
-    root.append(h(`<div class="empty" style="padding-top:30px"><h3>compose your first look</h3><p>${state.items.length ? 'Pick pieces from your closet and arrange them like a mood board.' : 'Add a few pieces to your closet first, then come back here to collage.'}</p></div>`));
-  }
 }
 
 function surpriseLook() {
   const pick = (cat) => { const l = state.items.filter((i) => i.cat === cat); return l[Math.floor(Math.random() * l.length)]; };
   const ids = ['top', 'bottom', 'shoes', 'acc'].map(pick).filter(Boolean).map((i) => i.id);
-  if (!ids.length) { toast('add some pieces first'); return; }
+  if (!ids.length) { toast('Add pieces first'); return; }
   openEditor(null, ids);
 }
 
@@ -938,7 +1090,7 @@ const DEFAULT_LAYOUT = {
 
 function openEditor(outfit = null, startIds = []) {
   const o = outfit ? structuredClone(outfit) : {
-    id: uid(), name: 'untitled look', pieces: [], board: BOARD_COLORS[0], updated: Date.now(),
+    id: uid(), name: 'Untitled', pieces: [], board: BOARD_COLORS[0], updated: Date.now(),
   };
   let selected = null;
   let dirty = !outfit && startIds.length > 0;
@@ -949,17 +1101,16 @@ function openEditor(outfit = null, startIds = []) {
       <input class="input" data-name value="${esc(o.name)}" maxlength="40" />
       <button class="round dark" data-a="save" aria-label="Save">${svg('check')}</button>
     </div>
-    <div class="board"><div class="hint">tap + to add pieces<br/>drag · pinch · twist</div></div>
+    <div class="board"><div class="hint">Tap + to add pieces</div></div>
     <div class="editor-bar">
       <button class="round dark" data-a="add" aria-label="Add pieces">${svg('plus')}</button>
       <button class="round" data-a="bg" aria-label="Board colour"><span data-bgdot style="width:22px;height:22px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--ink-3)"></span></button>
       <button class="round" data-a="shuffle" aria-label="Tidy layout">${svg('sparkle')}</button>
-      <div class="total"><small>in this look</small><b data-total>0 pieces</b></div>
+      <div class="total"><b data-total>0 pieces</b></div>
     </div>
     <div class="palette-tray">
-      <div class="row"><span class="lbl">in look</span><div class="pill-strip" data-in></div></div>
-      <div class="row"><span class="lbl">try with</span><div class="pill-strip" data-try></div></div>
-      <div class="note" data-note>tap a colour for its name · long-press to find pieces</div>
+      <div class="row"><span class="lbl">Colours</span><div class="pill-strip" data-in></div></div>
+      <div class="note" data-note></div>
     </div>
   </div>`);
   const s = sheet(c, { full: true });
@@ -1116,54 +1267,32 @@ function openEditor(outfit = null, startIds = []) {
       { icon: 'down', label: 'Send to back', run: () => { o.pieces.unshift(o.pieces.splice(o.pieces.indexOf(p), 1)[0]); o.pieces.forEach(place); dirty = true; } },
       { icon: 'flip', label: 'Flip', run: () => { p.flip = !p.flip; place(p); dirty = true; } },
       { icon: 'copy', label: 'Duplicate', run: () => { const q = { ...p, x: p.x + 0.05, y: p.y + 0.04 }; o.pieces.push(q); addNode(q, true); select(q); dirty = true; sync(); } },
-      { icon: 'palette', label: 'Match colours', run: () => select(p) },
       { icon: 'trash', label: 'Remove from look', danger: true, run: () => removePiece(p) },
     ], e);
   }
 
-  // ----- palette tray
+  // ----- the colours in this look (taken from its pieces)
   function syncPalette() {
-    const inEl = $('[data-in]', c), tryEl = $('[data-try]', c);
+    const inEl = $('[data-in]', c);
     const cols = outfitColors(o);
     inEl.innerHTML = '';
     (cols.length ? cols : ['#e9e4d8']).forEach((col) => inEl.append(swatchBtn(col, !cols.length)));
-    const base = (selected && itemById(selected.itemId)?.colors?.[0]) || cols[0];
-    tryEl.innerHTML = '';
-    let suggestion;
-    if (base) {
-      const hs = harmonies(base);
-      // a gentle mix: analogous neighbour, complementary accent, tonal light, a grounding neutral
-      suggestion = [hs.find((g) => g.name === 'Analogous').colors[0], hs.find((g) => g.name === 'Complementary').colors[1],
-        hs.find((g) => g.name === 'Tonal').colors[3], hs.find((g) => g.name === 'Analogous').colors[2], '#6f6558'];
-    } else suggestion = INSPIRATION[0].colors;
-    suggestion.forEach((col) => tryEl.append(swatchBtn(col)));
+    $('[data-note]', c).textContent = '';
   }
   function swatchBtn(col, placeholder = false) {
     const b = h(`<button style="background:${col}" aria-label="${colorName(col)}"></button>`);
     if (placeholder) return b;
-    press(b, {
-      tap: () => {
-        const n = state.items.filter((i) => (i.colors || []).some((x) => closeness(x, col) > 0.72)).length;
-        $('[data-note]', c).textContent = `${colorName(col)} · ${col}${n ? ` — ${n} piece${n === 1 ? '' : 's'} in your closet match` : ''}`;
-      },
-      long: () => openPicker(col),
-      hapticTap: 'select',
-    });
+    press(b, { tap: () => { $('[data-note]', c).textContent = colorName(col); }, hapticTap: 'select' });
     return b;
   }
 
   // ----- toolbar
-  press($('[data-a=add]', c), { tap: () => openPicker(), long: (e) => contextMenu($('[data-a=add]', c), 'add', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => openPicker(null, k) })), e) });
+  press($('[data-a=add]', c), { tap: () => openPicker(), long: (e) => contextMenu($('[data-a=add]', c), 'Add', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => openPicker(k) })), e) });
   const bgBtn = $('[data-a=bg]', c);
   press(bgBtn, {
     tap: () => { o.board = BOARD_COLORS[(BOARD_COLORS.indexOf(o.board) + 1) % BOARD_COLORS.length]; paintBoard(); dirty = true; },
-    long: (e) => contextMenu(bgBtn, 'board colour', [
-      { icon: 'swatch', label: 'Linen', run: () => setBoard('#f7f3ec') },
-      { icon: 'swatch', label: 'Sage mist', run: () => setBoard('#eef0e8') },
-      { icon: 'swatch', label: 'Blush clay', run: () => setBoard('#f3ebe6') },
-      { icon: 'swatch', label: 'Fog blue', run: () => setBoard('#eaeef0') },
-      { icon: 'swatch', label: 'Lilac', run: () => setBoard('#efebf2') },
-      { icon: 'swatch', label: 'Night', run: () => setBoard('#2e2b28') },
+    long: (e) => contextMenu(bgBtn, 'Board', [
+      ...BOARD.map(([label, col]) => ({ icon: 'swatch', label, run: () => setBoard(col) })),
     ], e),
   });
   function setBoard(col) { o.board = col; paintBoard(); dirty = true; }
@@ -1181,31 +1310,30 @@ function openEditor(outfit = null, startIds = []) {
   }, hapticTap: null });
 
   async function save() {
-    o.name = nameInp.value.trim() || 'untitled look';
+    o.name = nameInp.value.trim() || 'Untitled';
     o.updated = Date.now();
     o.thumb = await renderThumb(o, bsize());
     await db.put('outfits', o);
     const i = state.outfits.findIndex((x) => x.id === o.id);
     if (i >= 0) state.outfits[i] = o; else state.outfits.push(o);
     dirty = false;
-    haptic('success'); toast('look saved');
+    haptic('success'); toast('Saved');
   }
   press($('[data-a=save]', c), { tap: async () => { await save(); s.close(); setView('outfits'); renderOutfits(); }, hapticTap: null });
   press($('[data-a=back]', c), { tap: async () => {
     if (dirty && o.pieces.length) {
-      const keep = await confirmSheet('Leave without saving?', 'Your arrangement will be lost.', 'Discard');
+      const keep = await confirmSheet('Discard changes?', '', 'Discard');
       if (!keep) return;
     }
     s.close();
   } });
 
   // ----- piece picker
-  function openPicker(matchColor = null, onlyCat = null) {
+  function openPicker(onlyCat = null) {
     let cat = onlyCat || 'all';
-    const pc = h(`<div><h2>${matchColor ? 'pieces that match' : 'add pieces'}</h2>
-      ${matchColor ? `<p class="sub"><span class="sw" style="display:inline-block;width:14px;height:14px;vertical-align:-2px;background:${matchColor}"></span> ${colorName(matchColor)} and close tones</p>` : '<p class="sub">tap to add or remove · long-press for details</p>'}
+    const pc = h(`<div><h2>Add pieces</h2>
       <div class="chips" data-c></div><div class="picker-grid" data-g></div></div>`);
-    const ps = sheet(pc);
+    sheet(pc);
     const draw = () => {
       const chipsEl = $('[data-c]', pc); chipsEl.innerHTML = '';
       ['all', ...CAT_ORDER].forEach((k) => {
@@ -1215,8 +1343,7 @@ function openEditor(outfit = null, startIds = []) {
       });
       const g = $('[data-g]', pc); g.innerHTML = '';
       let list = state.items.filter((i) => cat === 'all' || i.cat === cat);
-      if (matchColor) list = list.map((i) => [i, Math.max(0, ...(i.colors || []).map((x) => closeness(x, matchColor)))]).filter(([, s]) => s > 0.55).sort((a, b) => b[1] - a[1]).map(([i]) => i);
-      if (!list.length) g.append(h(`<p style="grid-column:1/-1;color:var(--ink-3);text-align:center;padding:30px 0">${state.items.length ? 'nothing here' : 'your closet is empty — add pieces first'}</p>`));
+      if (!list.length) g.append(h(`<p style="grid-column:1/-1;color:var(--ink-3);text-align:center;padding:30px 0">${state.items.length ? 'No pieces' : 'Your closet is empty'}</p>`));
       list.forEach((it, idx) => {
         const inLook = o.pieces.some((p) => p.itemId === it.id);
         const b = h(`<button class="pick-item ${inLook ? 'in' : ''}" style="animation:pieceIn .5s ${idx * 25}ms both cubic-bezier(.22,1,.36,1)"><img src="${it.sticker}" alt="" /><span class="on">${svg('check')}</span></button>`);
@@ -1228,7 +1355,6 @@ function openEditor(outfit = null, startIds = []) {
           },
           long: (e) => contextMenu(b, it.name, [
             { icon: 'plus', label: 'Add another', run: () => { addPiece(it.id); b.classList.add('in'); } },
-            { icon: 'palette', label: 'Find matching pieces', run: () => { ps.close(); setTimeout(() => openPicker(it.colors?.[0]), 300); } },
           ], e),
           hapticTap: 'select',
         });
@@ -1242,7 +1368,7 @@ function openEditor(outfit = null, startIds = []) {
     refreshAll();
     startIds.forEach((id) => addPiece(id));
     if (startIds.length) select(null);
-    if (!o.pieces.length && state.items.length) setTimeout(() => openPicker(null, state.filterCat !== 'all' ? state.filterCat : null), 500);
+    if (!o.pieces.length && state.items.length) setTimeout(() => openPicker(state.filterCat !== 'all' ? state.filterCat : null), 500);
   });
   const onResize = () => o.pieces.forEach(place);
   window.addEventListener('resize', onResize);
@@ -1269,87 +1395,6 @@ async function renderThumb(o, { W, H }) {
   return cv.toDataURL('image/jpeg', 0.82);
 }
 
-/* ------------------------------------------------------------------ palette view */
-
-function closetColors() {
-  const all = [];
-  state.items.forEach((i) => (i.colors || []).forEach((c) => { if (all.every((x) => closeness(x, c) < 0.9)) all.push(c); }));
-  return all.sort((a, b) => {
-    const [ha, sa, la] = hexToHsl(a), [hb, sb, lb] = hexToHsl(b);
-    const na = sa < 14, nb = sb < 14;
-    if (na !== nb) return na ? 1 : -1;
-    return na ? lb - la : ha - hb;
-  });
-}
-
-function renderPalette() {
-  const root = $('#view-palette');
-  root.innerHTML = '';
-  const cols = closetColors();
-  if (!state.paletteBase) state.paletteBase = cols[0] || '#a3b18a';
-  const base = state.paletteBase;
-
-  const head = h(`<div class="card"><div class="base-row">
-      <label class="base-swatch" style="background:${base}"><input type="color" value="${base}" aria-label="Pick a base colour" /></label>
-      <div><div class="base-name">${colorName(base)}</div><div class="base-hex">${base.toUpperCase()} · tap the swatch to choose any colour</div></div>
-    </div></div>`);
-  const picker = $('input', head);
-  picker.addEventListener('change', () => { state.paletteBase = picker.value; haptic('select'); renderPalette(); });
-  root.append(head);
-
-  if (cols.length) {
-    const cc = h(`<div class="card"><h3>your closet’s colours</h3><p class="hint">tap one to build harmonies around it</p><div class="closet-colors"></div></div>`);
-    cols.forEach((col) => {
-      const b = h(`<button class="sw ${col === base ? 'active' : ''}" style="background:${col}" aria-label="${colorName(col)}"></button>`);
-      press(b, { tap: () => { state.paletteBase = col; renderPalette(); }, long: (e) => colorMenu(col, b, e), hapticTap: 'select' });
-      $('.closet-colors', cc).append(b);
-    });
-    root.append(cc);
-  }
-
-  harmonies(base).forEach((g, gi) => {
-    const card = h(`<div class="card" style="animation-delay:${gi * 50}ms"><h3>${g.name.toLowerCase()}</h3><p class="hint">${g.hint}</p><div class="harmony"></div><div class="matches"></div></div>`);
-    g.colors.forEach((col) => {
-      const b = h(`<button style="background:${col};color:${textOn(col)}"><span>${colorName(col)}</span></button>`);
-      press(b, { tap: () => copyHex(col), long: (e) => colorMenu(col, b, e), hapticTap: 'select' });
-      $('.harmony', card).append(b);
-    });
-    // pieces in the closet that fit this harmony
-    const matches = state.items.filter((i) => i.colors?.[0] && g.colors.some((gc) => closeness(i.colors[0], gc) > 0.8)).slice(0, 12);
-    matches.forEach((it) => { const im = h(`<img src="${it.sticker}" alt="${esc(it.name)}" />`); press(im, { tap: () => openDetail(it) }); $('.matches', card).append(im); });
-    if (!matches.length) $('.matches', card).remove();
-    root.append(card);
-  });
-
-  const insp = h('<div class="card"><h3>calm inspiration</h3><p class="hint">quiet palettes to dress around — tap to explore</p></div>');
-  INSPIRATION.forEach((p) => {
-    const row = h(`<div style="margin-bottom:12px"><div style="font-size:13px;color:var(--ink-2);margin:0 0 6px 2px">${p.name}</div><div class="harmony" style="height:44px"></div></div>`);
-    p.colors.forEach((col) => {
-      const b = h(`<button style="background:${col}"></button>`);
-      press(b, { tap: () => { state.paletteBase = col; renderPalette(); window.scrollTo({ top: 0, behavior: 'smooth' }); }, long: (e) => colorMenu(col, b, e), hapticTap: 'select' });
-      $('.harmony', row).append(b);
-    });
-    insp.append(row);
-  });
-  root.append(insp);
-}
-
-function colorMenu(col, anchor, e) {
-  contextMenu(null, `${colorName(col)} ${col}`, [
-    { icon: 'palette', label: 'Use as base colour', run: () => { state.paletteBase = col; if (state.view !== 'palette') setView('palette'); else renderPalette(); window.scrollTo({ top: 0, behavior: 'smooth' }); } },
-    { icon: 'copy', label: 'Copy hex', run: () => copyHex(col) },
-    { icon: 'look', label: 'Start a look in this colour', run: () => {
-      const ids = CAT_ORDER.map((cat) => state.items.filter((i) => i.cat === cat).map((i) => [i, Math.max(0, ...(i.colors || []).map((x) => closeness(x, col)))]).sort((a, b) => b[1] - a[1])[0]).filter((x) => x && x[1] > 0.5).map(([i]) => i.id);
-      if (!ids.length) { toast('no close matches yet'); return; }
-      openEditor(null, ids);
-    } },
-  ], e);
-}
-function copyHex(col) {
-  navigator.clipboard?.writeText(col).catch(() => {});
-  toast(`${colorName(col)} · ${col.toUpperCase()} copied`);
-}
-
 /* ------------------------------------------------------------------ tally + settings */
 
 function openTally() {
@@ -1358,46 +1403,49 @@ function openTally() {
     const t = totals();
     const maxN = Math.max(1, ...CAT_ORDER.map((k) => t.by[k].n));
     const unpriced = t.n - t.priced;
+    const status = !t.n ? 'No pieces' : unpriced ? `${unpriced} to price` : 'All priced';
     // how often each piece appears in a look
     const uses = new Map();
     state.outfits.forEach((o) => new Set(o.pieces.map((p) => p.itemId)).forEach((id) => uses.set(id, (uses.get(id) || 0) + 1)));
     const mostStyled = state.items.filter((i) => uses.get(i.id)).sort((x, y) => uses.get(y.id) - uses.get(x.id))[0];
     const unstyled = state.items.filter((i) => !uses.get(i.id)).length;
-    // signature colour = the most common main colour
-    const colourCount = new Map();
-    state.items.forEach((i) => { const col = i.colors?.[0]; if (col) { const nm = colorName(col); const e = colourCount.get(nm) || { n: 0, col }; e.n++; colourCount.set(nm, e); } });
-    const signature = [...colourCount.entries()].sort((x, y) => y[1].n - x[1].n)[0];
-    c.innerHTML = `<h2>the tally</h2>
-      <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'} in your closet</small></div>
-      <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}. Open the price list">
-        <span class="vp-l">closet value</span><span class="vp-v">${money(t.v)}</span>
-        <span class="vp-s">${!t.n ? 'no pieces yet' : unpriced ? `${unpriced} to price` : 'all priced'}</span>${svg('back', 'class="vp-c"')}
+    const newest = [...state.items].sort((x, y) => y.created - x.created)[0];
+    c.innerHTML = `<h2>Tally</h2>
+      <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'}</small></div>
+      <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}, ${status}. Open the price list">
+        <span class="vp-l">Value</span><span class="vp-v">${money(t.v)}</span>
+        <span class="vp-s">${status}</span>${svg('back', 'class="vp-c"')}
       </button>
-      ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 80}ms;background:${['var(--sage)', 'var(--clay)', '#8fa8b0', '#b9a3c4'][i]}"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}
+      ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 80}ms"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}
       <div class="kv" style="margin-top:16px">
-        <div><small>looks</small><b>${state.outfits.length}</b></div>
-        <div><small>not yet styled</small><b>${unstyled} piece${unstyled === 1 ? '' : 's'}</b></div>
+        <div><small>Looks</small><b>${state.outfits.length}</b></div>
+        <div><small>Unstyled</small><b>${unstyled}</b></div>
       </div>
       <div class="kv">
-        <div><small>most styled</small><b>${mostStyled ? esc(mostStyled.name) : '—'}</b></div>
-        <div><small>signature colour</small><b>${signature ? `<i class="dot" style="background:${signature[1].col}"></i>${signature[0]}` : '—'}</b></div>
+        <div><small>Most styled</small><b>${mostStyled ? esc(mostStyled.name) : 'None'}</b></div>
+        <div><small>Newest</small><b>${newest ? esc(newest.name) : 'None'}</b></div>
       </div>`;
-    press($('[data-a=prices]', c), { tap: () => openPrices(draw), long: () => openPrices(draw), hapticTap: 'select' });
+    // after pricing: refresh the numbers and hand focus back to the pill
+    const prices = () => openPrices(() => { draw(); $('[data-a=prices]', c)?.focus({ preventScroll: true }); });
+    press($('[data-a=prices]', c), { tap: prices, long: prices, hapticTap: 'select' });
   };
   draw();
-  sheet(c);
+  markTab('tally');
+  sheet(c, { onClose: () => markTab(state.view) });
 }
 
 /** The one place prices are listed and edited. Unpriced pieces come first. */
+let pricesOpen = false;
 function openPrices(onClose) {
+  if (pricesOpen) return; // one list at a time: a second copy would hold stale boxes
+  pricesOpen = true;
   const cur = state.settings.currency;
   // order is fixed when the list opens so rows don't jump while typing
   const byNew = (x, y) => y.created - x.created;
   const todo = state.items.filter((i) => !isPriced(i)).sort(byNew);
   const done = state.items.filter(isPriced).sort(byNew);
-  const c = h(`<div class="prices"><h2>prices</h2>
-    <p class="sub">only you see these — type a price for any piece</p>
-    <div class="price-total"><span>total</span><b data-total></b><small data-count></small></div>
+  const c = h(`<div class="prices"><h2>Prices</h2>
+    <div class="price-total"><span>Total</span><b data-total></b><small data-count></small></div>
     <div data-list></div></div>`);
   const list = $('[data-list]', c);
   const syncTotal = () => {
@@ -1406,9 +1454,11 @@ function openPrices(onClose) {
     $('[data-count]', c).textContent = `${t.priced} of ${t.n} priced`;
   };
   const pending = new Map(); // item id -> save timer
+  const dirty = new Set(); // ids whose box was actually changed; nothing else is ever written
   const rows = []; // { it, inp, row } in display order
   const commit = async (it, inp) => {
     clearTimeout(pending.get(it.id)); pending.delete(it.id);
+    if (!dirty.delete(it.id)) return;
     const next = parsePrice(inp.value);
     if (next === (isPriced(it) ? Number(it.price) : null)) return;
     it.price = next;
@@ -1424,41 +1474,47 @@ function openPrices(onClose) {
     const top = vv ? vv.offsetTop : 0, height = vv ? vv.height : window.innerHeight;
     const head = $('.price-total', c).getBoundingClientRect().bottom;
     if (r.bottom > top + height - 16 || r.top < head + 8) {
-      sh.el.scrollBy({ top: r.top + r.height / 2 - (top + height * 0.42), behavior: 'smooth' });
+      // aim a little above the middle of what is visible, but never underneath the pinned total
+      const target = Math.max(head + 8 + r.height / 2, top + height * 0.42);
+      sh.el.scrollBy({ top: r.top + r.height / 2 - target, behavior: 'smooth' });
     }
   };
   const onViewport = () => { const r = rows.find((x) => x.inp === document.activeElement); if (r) reveal(r.row, r.inp); };
   vv?.addEventListener('resize', onViewport);
   const section = (title, items) => {
     if (!items.length) return;
-    list.append(h(`<div class="price-head">${title} <span>${items.length}</span></div>`));
+    list.append(h(`<div class="price-head">${title}</div>`));
     items.forEach((it) => {
       const row = h(`<div class="price-row">
         <img src="${it.sticker}" alt="" />
-        <div class="pr-text"><div class="pr-name">${esc(it.name)}</div><div class="pr-sub">${esc(CATS[it.cat]?.label || '')}${it.sub ? ' · ' + esc(it.sub) : ''}</div></div>
-        <label class="pr-input"><span>${esc(cur)}</span><input inputmode="decimal" enterkeyhint="next" autocomplete="off" placeholder="—" aria-label="Price of ${esc(it.name)}" value="${isPriced(it) ? priceText(it.price) : ''}" /></label>
+        <div class="pr-text"><div class="pr-name">${esc(it.name)}</div><div class="pr-sub">${esc(it.sub || CATS[it.cat]?.label || '')}</div></div>
+        <label class="pr-input"><span>${esc(cur)}</span><input inputmode="decimal" enterkeyhint="next" autocomplete="off" maxlength="9" placeholder="0" aria-label="Price of ${esc(it.name)}" value="${isPriced(it) ? priceText(it.price) : ''}" /></label>
       </div>`);
       const inp = $('input', row);
       rows.push({ it, inp, row });
+      let wasPriced = isPriced(it); // as it stood when the box last gained focus
       inp.addEventListener('input', () => {
         inp.value = cleanPrice(inp.value);
+        dirty.add(it.id);
         clearTimeout(pending.get(it.id));
         pending.set(it.id, setTimeout(() => commit(it, inp), 500));
       });
       inp.addEventListener('focus', () => {
         row.classList.add('focus');
-        // select() focuses the input in some browsers, so only ever select the one that still has focus
-        // (otherwise two quick focus changes would steal focus back and forth forever)
-        setTimeout(() => { if (document.activeElement === inp) inp.select(); }, 0);
+        wasPriced = isPriced(it);
+        // Select the old value so typing replaces it, but only if this box still has focus (select()
+        // can steal focus, and two boxes would then fight over it) and nothing has been typed yet
+        // (or a fast first digit would be selected and overwritten by the second).
+        const v0 = inp.value;
+        setTimeout(() => { if (document.activeElement === inp && inp.value === v0) inp.select(); }, 0);
         setTimeout(() => reveal(row, inp), 350);
       });
       inp.addEventListener('blur', async () => {
         row.classList.remove('focus');
-        const before = isPriced(it);
         await commit(it, inp);
         // tidy the display ("12." → "12")
         inp.value = isPriced(it) ? priceText(it.price) : '';
-        if (isPriced(it) !== before) haptic(isPriced(it) ? 'success' : 'light');
+        if (isPriced(it) !== wasPriced) { haptic(isPriced(it) ? 'success' : 'light'); wasPriced = isPriced(it); }
       });
       inp.addEventListener('keydown', (e) => {
         if (e.key !== 'Enter') return;
@@ -1466,23 +1522,23 @@ function openPrices(onClose) {
         const nxt = rows[rows.findIndex((r) => r.inp === inp) + 1];
         if (nxt) nxt.inp.focus(); else inp.blur();
       });
-      // long-press the piece (not the input) for quick actions
+      // tap the piece to type its price; long-press for quick actions
       press($('.pr-text', row), {
         tap: () => inp.focus(),
         long: (e) => contextMenu(null, it.name, [
-          { icon: 'edit', label: 'Set price', run: () => inp.focus() },
-          { icon: 'undo', label: 'Clear price', run: async () => { inp.value = ''; await commit(it, inp); } },
+          { icon: 'undo', label: 'Clear price', run: async () => { inp.value = ''; dirty.add(it.id); await commit(it, inp); wasPriced = false; } },
         ], e),
         hapticTap: 'select',
       });
       list.append(row);
     });
   };
-  if (!state.items.length) list.append(h('<p class="pr-empty">add a piece to your closet and it will show up here</p>'));
-  section('to price', todo);
-  section('priced', done);
+  if (!state.items.length) list.append(h('<p class="pr-empty">No pieces yet</p>'));
+  section('To price', todo);
+  section('Priced', done);
   syncTotal();
   sh = sheet(c, { onClose: () => {
+    pricesOpen = false;
     vv?.removeEventListener('resize', onViewport);
     // save whatever was typed last, even if its box still has focus or its debounce hasn't fired
     rows.forEach(({ it, inp }) => { commit(it, inp); });
@@ -1492,11 +1548,11 @@ function openPrices(onClose) {
 }
 
 function openSettings() {
-  const c = h(`<div><h2>settings</h2><p class="sub">everything lives privately on this device</p>
-    <div class="toggle"><span>haptic feedback</span><button class="switch ${hapticsEnabled() ? 'on' : ''}" data-a="hap" aria-label="Haptics"></button></div>
-    <div class="field" style="margin-top:16px"><label>currency symbol</label><div class="wrap-chips" data-cur></div></div>
-    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="exp">${svg('download')} backup</button><button class="btn soft" data-a="imp">${svg('upload')} restore</button></div>
-    <button class="btn ghost block" data-a="wipe">${svg('trash')} clear everything</button></div>`);
+  const c = h(`<div><h2>Settings</h2>
+    <div class="toggle"><span>Haptics</span><button class="switch ${hapticsEnabled() ? 'on' : ''}" data-a="hap" aria-label="Haptics"></button></div>
+    <div class="field"><label>Currency</label><div class="wrap-chips" data-cur></div></div>
+    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="exp">Backup</button><button class="btn soft" data-a="imp">Restore</button></div>
+    <button class="btn ghost block" data-a="wipe">Clear everything</button></div>`);
   const s = sheet(c);
   const hb = $('[data-a=hap]', c);
   press(hb, { tap: () => { const on = !hb.classList.contains('on'); hb.classList.toggle('on', on); setHaptics(on); state.settings.haptics = on; saveSettings(); haptic('select'); }, hapticTap: null });
@@ -1509,9 +1565,9 @@ function openSettings() {
   press($('[data-a=imp]', c), { tap: () => { const f = $('#file-import'); f.value = ''; f.onchange = () => f.files[0] && importData(f.files[0]).then(() => s.close()); f.click(); } });
   press($('[data-a=wipe]', c), { tap: async () => {
     s.close();
-    if (!(await confirmSheet('Clear everything?', 'All pieces and looks will be deleted from this device. Make a backup first if unsure.', 'Clear all'))) return;
+    if (!(await confirmSheet('Clear everything?', 'All pieces and looks will be deleted.', 'Clear'))) return;
     await db.clear('items'); await db.clear('outfits');
-    state.items = []; state.outfits = []; render(); toast('a fresh start');
+    state.items = []; state.outfits = []; render(); toast('Cleared');
   } });
 }
 
@@ -1524,7 +1580,7 @@ async function exportData() {
   a.download = `my-closet-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  haptic('success'); toast('backup saved');
+  haptic('success'); toast('Backup saved');
 }
 async function importData(file) {
   try {
@@ -1532,8 +1588,8 @@ async function importData(file) {
     for (const it of data.items || []) await db.put('items', it);
     for (const o of data.outfits || []) await db.put('outfits', o);
     await load(); render();
-    haptic('success'); toast(`restored ${data.items?.length || 0} pieces`);
-  } catch { haptic('warning'); toast('that file could not be read'); }
+    haptic('success'); toast(`Restored ${data.items?.length || 0} pieces`);
+  } catch { haptic('warning'); toast('File could not be read'); }
 }
 
 /* ------------------------------------------------------------------ boot */
@@ -1549,20 +1605,19 @@ async function load() {
 function bindChrome() {
   $$('.tab[data-view]').forEach((t) => press(t, {
     tap: () => setView(t.dataset.view),
-    long: t.dataset.view === 'closet' ? (e) => contextMenu(t, 'closet', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => { state.filterCat = k; state.filterSub = null; if (state.view !== 'closet') setView('closet'); else renderCloset(); } })), e)
-      : t.dataset.view === 'outfits' ? (e) => contextMenu(t, 'looks', [
+    long: t.dataset.view === 'closet' ? (e) => contextMenu(t, 'Pieces', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => { state.filterCat = k; state.filterSub = null; if (state.view !== 'closet') setView('closet'); else renderCloset(); } })), e)
+      : (e) => contextMenu(t, 'Looks', [
         { icon: 'plus', label: 'New look', run: () => openEditor() },
         { icon: 'sparkle', label: 'Surprise me', run: surpriseLook },
-      ], e)
-      : (e) => contextMenu(t, 'palette', INSPIRATION.slice(0, 5).map((p) => ({ icon: 'swatch', label: p.name, run: () => { state.paletteBase = p.colors[2]; if (state.view !== 'palette') setView('palette'); else renderPalette(); } })), e),
+      ], e),
     hapticTap: 'select',
   }));
   press($('#tally-tab'), { tap: openTally, long: () => openPrices(), hapticTap: 'select' });
   const fab = $('#fab');
   press(fab, {
     tap: () => (state.view === 'outfits' ? openEditor() : openAdd()),
-    long: (e) => contextMenu(fab, 'create', [
-      { icon: 'camera', label: 'Take a photo', run: () => quickPick('camera') },
+    long: (e) => contextMenu(fab, 'Add', [
+      { icon: 'camera', label: 'Take photo', run: () => quickPick('camera') },
       { icon: 'image', label: 'Choose photos', run: () => quickPick('library') },
       { icon: 'look', label: 'New look', run: () => openEditor() },
       { icon: 'sparkle', label: 'Surprise me', run: surpriseLook },
@@ -1590,10 +1645,12 @@ function quickPick(kind) {
 }
 
 (async function boot() {
-  greeting();
   bindChrome();
   await load();
   render();
+  moveTabInd();
+  window.addEventListener('resize', moveTabInd);
+  document.fonts?.ready?.then(moveTabInd);
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
 
