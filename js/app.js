@@ -1,7 +1,7 @@
 import { db, uid } from './db.js';
 import { haptic } from './haptics.js';
 import { loadImage, rasterize, computeMask, renderSticker, renderMaskPreview, DEFAULT_TOLERANCE } from './cutout.js';
-import { colorName, closeness } from './color.js';
+import { colorName, closeness, hexToHsl } from './color.js';
 
 /* ------------------------------------------------------------------ data */
 
@@ -35,6 +35,9 @@ const ICON = {
   eraser: '<path d="m4 15 9-9 7 7-6 6H8zM9 10l7 7M8 20h12"/>',
   undo: '<path d="M9 7 4 12l5 5M4 12h11a5 5 0 0 1 0 10h-2"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  heart: '<path d="M12 20s-7-4.4-7-9.6A4.1 4.1 0 0 1 12 8a4.1 4.1 0 0 1 7 2.4c0 5.2-7 9.6-7 9.6z"/>',
+  search: '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/>',
+  share: '<path d="M12 15V4M8 8l4-4 4 4M6 12v7h12v-7"/>',
   tune: '<path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.6"/><circle cx="8" cy="17" r="2.6"/>',
   rotate: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
@@ -51,7 +54,25 @@ const state = {
   view: 'closet',
   filterCat: 'all',
   filterSub: null,
+  filterFav: false,
+  search: '',
+  searchOpen: false,
 };
+
+/* Appearance and accessibility choices. Kept in localStorage so index.html can apply them before first paint. */
+const PREFS_KEY = 'closet.prefs';
+const prefs = { theme: 'system', text: 1, contrast: false, motion: false };
+try { Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) || '{}')); } catch { /* private mode: defaults */ }
+const isDark = () => prefs.theme === 'dark' || (prefs.theme === 'system' && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
+function applyPrefs(save = true) {
+  const r = document.documentElement;
+  if (prefs.theme === 'system') r.removeAttribute('data-theme'); else r.dataset.theme = prefs.theme;
+  r.style.setProperty('--ts', String(prefs.text));
+  r.toggleAttribute('data-contrast', false); if (prefs.contrast) r.dataset.contrast = 'more';
+  r.toggleAttribute('data-motion', false); if (prefs.motion) r.dataset.motion = 'reduce';
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', isDark() ? '#1b1917' : '#f6f3ee');
+  if (save) { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* not stored, still applied */ } }
+}
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -64,6 +85,67 @@ const money = (n) => {
 };
 const itemById = (id) => state.items.find((i) => i.id === id);
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+// favourites and the wear log
+const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
+const wears = (x) => (x?.worn || []).length;
+function agoText(ts) {
+  const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(ts).setHours(0, 0, 0, 0)) / 86400000);
+  return days <= 0 ? 'today' : days === 1 ? 'yesterday' : days < 30 ? `${days} days ago` : new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+const wornText = (x) => (wears(x) ? `Worn ${wears(x)} time${wears(x) === 1 ? '' : 's'}, last ${agoText(x.worn[x.worn.length - 1])}` : '');
+async function toggleFav(x, store) {
+  x.fav = !x.fav;
+  await db.put(store, x);
+  haptic('select');
+}
+/** Marks pieces (and the look they came from) as worn today. Once a day each. */
+async function logWear(items, look = null) {
+  const now = Date.now();
+  let n = 0;
+  for (const it of items) {
+    if (!it || (it.worn || []).some((t) => sameDay(t, now))) continue;
+    it.worn = [...(it.worn || []), now].slice(-400);
+    await db.put('items', it); n++;
+  }
+  if (look && !(look.worn || []).some((t) => sameDay(t, now))) {
+    look.worn = [...(look.worn || []), now].slice(-400);
+    await db.put('outfits', look); n++;
+  }
+  haptic(n ? 'success' : 'light');
+  toast(n ? 'Logged for today' : 'Already logged today');
+}
+/** How well two colours sit together, 0..1. Neutrals go with anything; clashing hues score low. */
+function pairScore(a, b) {
+  if (!a || !b) return 0.6;
+  const [ha, sa, la] = hexToHsl(a), [hb, sb, lb] = hexToHsl(b);
+  // black, white and grey; navy and denim; tan, beige and brown
+  const neutral = (hue, sat, lig) => sat < 16 || lig < 14 || lig > 90 || (hue >= 200 && hue <= 250 && lig < 45) || (hue >= 15 && hue <= 50 && sat < 55);
+  if (neutral(ha, sa, la) || neutral(hb, sb, lb)) return 0.85;
+  const d = Math.abs(((ha - hb + 540) % 360) - 180); // hue distance, 0..180
+  if (d < 28) return Math.abs(la - lb) > 12 ? 0.9 : 0.7;     // same family, better with some light/dark contrast
+  if (d < 60) return 0.75;                                   // neighbours
+  if (d > 150) return 0.7;                                   // opposites
+  return 0.4;
+}
+/** One piece per category whose colours go together, built around `seedId` if given. Favourites and less-worn pieces get a small push. */
+function suggestLook(seedId = null) {
+  const chosen = [];
+  const seed = seedId && itemById(seedId);
+  if (seed) chosen.push(seed);
+  for (const cat of CAT_ORDER) {
+    if (chosen.some((x) => x.cat === cat)) continue;
+    let best = null, bestScore = -1;
+    for (const it of state.items) {
+      if (it.cat !== cat) continue;
+      const fit = chosen.length ? chosen.reduce((sum, x) => sum + pairScore(it.colors?.[0], x.colors?.[0]), 0) / chosen.length : 0.6;
+      const score = fit + (it.fav ? 0.08 : 0) - Math.min(0.1, wears(it) * 0.01) + Math.random() * 0.35;
+      if (score > bestScore) { bestScore = score; best = it; }
+    }
+    if (best) chosen.push(best);
+  }
+  return chosen.map((x) => x.id);
+}
+
 // the colours shown for a piece: its main two
 const mainColors = (x) => (x?.colors || []).slice(0, 2);
 // keep digits and a single decimal separator (comma typed on some keyboards becomes a dot)
@@ -121,13 +203,22 @@ function press(el, { tap, long, hapticTap = 'light', delay = 460 } = {}) {
 
 const layer = $('#layer');
 const stack = [];
+let sheetSeq = 0;
 
 function sheet(content, { full = false, onClose } = {}) {
   const scrim = h('<div class="scrim"></div>');
   const el = h(`<div class="sheet ${full ? 'full' : ''}">${full ? '' : '<div class="grabber"></div>'}</div>`);
   el.append(content);
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-modal', 'true');
+  el.tabIndex = -1;
+  const heading = el.querySelector('h2');
+  if (heading) { heading.id = heading.id || `sheet-title-${++sheetSeq}`; el.setAttribute('aria-labelledby', heading.id); }
+  const opener = document.activeElement;
   layer.append(scrim, el);
   requestAnimationFrame(() => requestAnimationFrame(() => { scrim.classList.add('show'); el.classList.add('show'); }));
+  // only take focus if nothing inside asked for it already
+  setTimeout(() => { if (!closed && !el.contains(document.activeElement)) el.focus({ preventScroll: true }); }, 60);
   let closed = false;
   const api = {
     el,
@@ -137,7 +228,10 @@ function sheet(content, { full = false, onClose } = {}) {
       scrim.classList.remove('show'); el.classList.remove('show');
       el.style.transform = '';
       setTimeout(() => { scrim.remove(); el.remove(); }, 520);
+      const inside = el.contains(document.activeElement);
       onClose?.();
+      // hand focus back to whatever opened the sheet, unless closing it already moved focus somewhere
+      if ((inside || document.activeElement === document.body) && opener && opener !== document.body && document.contains(opener)) opener.focus?.({ preventScroll: true });
       syncTabbar();
     },
   };
@@ -264,13 +358,17 @@ function contextMenu(anchor, title, actions, point) {
     scrim.classList.add('show'); menu.classList.add('show');
     if (preview) preview.style.transform = (anchor.style.transform || '') + ' scale(1.04)';
   }));
+  // Escape closes the menu before anything underneath it
+  function onKey(e) { if (e.key === 'Escape') { e.stopImmediatePropagation(); close(); } }
   function close() {
+    document.removeEventListener('keydown', onKey, true);
     scrim.classList.remove('show'); menu.classList.remove('show');
     if (preview) preview.style.transform = anchor.style.transform || '';
     setTimeout(() => { scrim.remove(); menu.remove(); preview?.remove(); }, 380);
   }
   scrim.addEventListener('click', close);
   scrim.addEventListener('contextmenu', (e) => { e.preventDefault(); close(); });
+  document.addEventListener('keydown', onKey, true);
 }
 
 let toastTimer;
@@ -371,8 +469,25 @@ function renderCloset() {
     return;
   }
 
-  // categories
+  // search (opened from the header)
+  if (state.searchOpen) {
+    const sr = h(`<div class="search">${svg('search')}<input type="search" placeholder="Search" aria-label="Search your closet" autocomplete="off" enterkeyhint="search" /><button aria-label="Close search">${svg('close')}</button></div>`);
+    const inp = $('input', sr);
+    inp.value = state.search;
+    inp.addEventListener('input', () => { state.search = inp.value; drawGrid(); });
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+    press($('button', sr), { tap: () => toggleSearch(false) });
+    root.append(sr);
+  }
+
+  // categories (with a favourites filter once something is a favourite)
   const chips = h('<div class="chips nav"></div>');
+  if (!state.items.some((i) => i.fav)) state.filterFav = false;
+  else {
+    const f = h(`<button class="chip fav ${state.filterFav ? 'active' : ''}" aria-label="Favourites" aria-pressed="${state.filterFav}">${svg('heart')}</button>`);
+    press(f, { tap: () => { state.filterFav = !state.filterFav; renderCloset(); }, hapticTap: 'select' });
+    chips.append(f);
+  }
   const mk = (key, label) => {
     const c = h(`<button class="chip ${state.filterCat === key ? 'active' : ''}">${label}</button>`);
     press(c, {
@@ -400,29 +515,49 @@ function renderCloset() {
   });
   root.append(subs);
 
-  const items = state.items
-    .filter((i) => state.filterCat === 'all' || i.cat === state.filterCat)
-    .filter((i) => !state.filterSub || i.sub === state.filterSub)
-    .sort((a, b) => b.created - a.created);
-  if (!items.length) {
-    root.append(h('<div class="empty"><p>No pieces here yet</p></div>'));
-    return;
+  const host = h('<div></div>');
+  root.append(host);
+  // redrawn on its own while typing in the search box, so the box keeps focus
+  function drawGrid() {
+    host.innerHTML = '';
+    const q = state.search.trim().toLowerCase();
+    const items = state.items
+      .filter((i) => state.filterCat === 'all' || i.cat === state.filterCat)
+      .filter((i) => !state.filterSub || i.sub === state.filterSub)
+      .filter((i) => !state.filterFav || i.fav)
+      .filter((i) => !q || [i.name, i.sub, CATS[i.cat]?.label, ...mainColors(i).map(colorName)].some((t) => t && t.toLowerCase().includes(q)))
+      .sort((a, b) => b.created - a.created);
+    if (!items.length) {
+      host.append(h(`<div class="empty"><p>${q ? 'Nothing matches' : 'No pieces here yet'}</p></div>`));
+      return;
+    }
+    const grid = h('<div class="grid"></div>');
+    items.forEach((it, idx) => {
+      const card = h(`<button class="piece" style="animation-delay:${Math.min(idx, 12) * 35}ms">
+        <span class="tile"><img class="sticker" src="${it.sticker}" alt="" loading="lazy" />${it.fav ? `<span class="fav-mark">${svg('heart')}</span>` : ''}</span>
+        <span class="meta"><span class="name">${esc(it.name)}</span><span class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>`);
+      if (it.fav) card.setAttribute('aria-label', `${it.name}, favourite`);
+      press(card, { tap: () => openDetail(it), long: (e) => itemMenu(it, card, e) });
+      grid.append(card);
+    });
+    host.append(grid);
   }
-  const grid = h('<div class="grid"></div>');
-  items.forEach((it, idx) => {
-    const card = h(`<button class="piece" style="animation-delay:${Math.min(idx, 12) * 35}ms">
-      <span class="tile"><img class="sticker" src="${it.sticker}" alt="" loading="lazy" /></span>
-      <span class="meta"><span class="name">${esc(it.name)}</span><span class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>`);
-    press(card, { tap: () => openDetail(it), long: (e) => itemMenu(it, card, e) });
-    grid.append(card);
-  });
-  root.append(grid);
+  drawGrid();
+}
+
+function toggleSearch(open = !state.searchOpen) {
+  state.searchOpen = open;
+  if (!open) state.search = '';
+  if (state.view !== 'closet') setView('closet'); else renderCloset();
+  if (open) setTimeout(() => $('#view-closet .search input')?.focus(), 60);
 }
 
 function itemMenu(it, anchor, e) {
   contextMenu(anchor, it.name, [
     { icon: 'edit', label: 'Edit', run: () => openAdd({ item: it }) },
-    { icon: 'look', label: 'Style a look', run: () => openEditor(null, [it.id]) },
+    { icon: 'look', label: 'Style a look', run: () => openEditor(null, suggestLook(it.id)) },
+    { icon: 'heart', label: it.fav ? 'Remove favourite' : 'Favourite', run: async () => { await toggleFav(it, 'items'); render(); } },
+    { icon: 'check', label: 'Wore today', run: () => logWear([it]) },
     { icon: 'copy', label: 'Duplicate', run: () => duplicateItem(it) },
     { icon: 'trash', label: 'Delete', danger: true, run: () => deleteItem(it) },
   ], e);
@@ -447,16 +582,27 @@ async function deleteItem(it) {
 
 function openDetail(it) {
   const cols = mainColors(it);
+  const inLooks = state.outfits.filter((o) => o.pieces.some((p) => p.itemId === it.id));
   const c = h(`<div>
-    <div class="detail-img"><img src="${it.sticker}" alt="" /></div>
+    <div class="detail-img"><img src="${it.sticker}" alt="" />
+      <button class="fav-btn ${it.fav ? 'on' : ''}" data-a="fav" aria-label="Favourite" aria-pressed="${!!it.fav}">${svg('heart')}</button></div>
     <h2>${esc(it.name)}</h2>
     <div class="detail-meta"><span>${esc(it.sub || CATS[it.cat]?.label || '')}</span><span class="dots">${cols.map((x) => `<i style="background:${x}"></i>`).join('')}</span><span>${cols.map(colorName).join(', ')}</span></div>
-    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="edit">Edit</button><button class="btn" data-a="look">Style</button></div>
-    <button class="btn ghost block" data-a="del">Delete</button>
+    <p class="worn" data-worn></p>
+    ${inLooks.length ? `<div class="in-looks" role="group" aria-label="Looks with this piece">${inLooks.slice(0, 8).map((o) => `<button data-look="${o.id}" aria-label="${esc(o.name)}"><img src="${o.thumb || ''}" alt="" /></button>`).join('')}</div>` : ''}
+    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="wore">Wore today</button><button class="btn" data-a="look">Style</button></div>
+    <div class="row-btns"><button class="btn ghost" data-a="edit">Edit</button><button class="btn ghost" data-a="del">Delete</button></div>
   </div>`);
   const s = sheet(c);
+  const syncWorn = () => { const w = $('[data-worn]', c); w.textContent = wornText(it); w.hidden = !wears(it); };
+  syncWorn();
+  const fav = $('[data-a=fav]', c);
+  press(fav, { tap: async () => { await toggleFav(it, 'items'); fav.classList.toggle('on', !!it.fav); fav.setAttribute('aria-pressed', String(!!it.fav)); render(); }, hapticTap: null });
+  $$('[data-look]', c).forEach((b) => press(b, { tap: () => { const o = state.outfits.find((x) => x.id === b.dataset.look); s.close(); if (o) openEditor(o); } }));
+  press($('[data-a=wore]', c), { tap: async () => { await logWear([it]); syncWorn(); }, hapticTap: null });
+  // a look built around this piece, ready to adjust
+  press($('[data-a=look]', c), { tap: () => { s.close(); openEditor(null, suggestLook(it.id)); } });
   press($('[data-a=edit]', c), { tap: () => { s.close(); openAdd({ item: it }); } });
-  press($('[data-a=look]', c), { tap: () => { s.close(); openEditor(null, [it.id]); } });
   press($('[data-a=del]', c), { tap: () => { s.close(); deleteItem(it); } });
 }
 
@@ -1031,12 +1177,15 @@ function renderOutfits() {
   [...state.outfits].sort((a, b) => b.updated - a.updated).forEach((o, idx) => {
     const cols = outfitColors(o);
     const card = h(`<button class="look" style="animation-delay:${(idx + 1) * 40}ms">
-      <img class="thumb" src="${o.thumb || ''}" alt="" />
+      <span class="thumb-wrap"><img class="thumb" src="${o.thumb || ''}" alt="" />${o.fav ? `<span class="fav-mark">${svg('heart')}</span>` : ''}</span>
       <span class="meta"><span class="name">${esc(o.name)}</span><span class="dots">${cols.slice(0, 5).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>`);
     press(card, { tap: () => openEditor(o), long: (e) => contextMenu(card, o.name, [
       { icon: 'edit', label: 'Open', run: () => openEditor(o) },
+      { icon: 'check', label: 'Wore today', run: () => logWear(o.pieces.map((p) => itemById(p.itemId)), o) },
+      { icon: 'heart', label: o.fav ? 'Remove favourite' : 'Favourite', run: async () => { await toggleFav(o, 'outfits'); renderOutfits(); } },
+      { icon: 'share', label: 'Share', run: () => shareLook(o) },
       { icon: 'copy', label: 'Duplicate', run: async () => {
-        const copy = { ...structuredClone(o), id: uid(), name: o.name + ' ii', updated: Date.now() };
+        const copy = { ...structuredClone(o), id: uid(), name: o.name + ' ii', updated: Date.now(), worn: [], fav: false };
         await db.put('outfits', copy); state.outfits.push(copy); haptic('success'); renderOutfits();
       } },
       { icon: 'trash', label: 'Delete', danger: true, run: async () => {
@@ -1050,10 +1199,26 @@ function renderOutfits() {
 }
 
 function surpriseLook() {
-  const pick = (cat) => { const l = state.items.filter((i) => i.cat === cat); return l[Math.floor(Math.random() * l.length)]; };
-  const ids = ['top', 'bottom', 'shoes', 'acc'].map(pick).filter(Boolean).map((i) => i.id);
+  const ids = suggestLook();
   if (!ids.length) { toast('Add pieces first'); return; }
   openEditor(null, ids);
+}
+
+/** Sends a look as a picture through the phone's share sheet, or saves it where sharing is not available. */
+async function shareLook(o) {
+  try {
+    let ratio = 1.25;
+    if (o.thumb) { try { const t = await loadImage(o.thumb); ratio = t.naturalHeight / t.naturalWidth; } catch { /* keep 4:5 */ } }
+    const cv = await drawLook(o, { W: 1, H: ratio }, 1200);
+    const blob = await new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('no image'))), 'image/png'));
+    const name = `${(o.name || 'look').replace(/[^\w\- ]+/g, '').trim() || 'look'}.png`;
+    const file = new File([blob], name, { type: 'image/png' });
+    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: o.name }); return; }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast('Image saved');
+  } catch (e) { if (e?.name !== 'AbortError') toast('Could not share'); }
 }
 
 /* ------------------------------------------------------------------ outfit editor */
@@ -1075,7 +1240,7 @@ const DEFAULT_LAYOUT = {
 
 function openEditor(outfit = null, startIds = []) {
   const o = outfit ? structuredClone(outfit) : {
-    id: uid(), name: 'Untitled', pieces: [], board: BOARD_COLORS[0], updated: Date.now(),
+    id: uid(), name: 'Untitled', pieces: [], board: isDark() ? BOARD_COLORS[BOARD_COLORS.length - 1] : BOARD_COLORS[0], updated: Date.now(),
   };
   let selected = null;
   let dirty = !outfit && startIds.length > 0;
@@ -1354,9 +1519,13 @@ function openEditor(outfit = null, startIds = []) {
   const close0 = s.close; s.close = () => { window.removeEventListener('resize', onResize); close0(); };
 }
 
-async function renderThumb(o, { W, H }) {
-  const scale = 600 / Math.max(1, W);
-  const cw = 600, ch = Math.round(H * scale);
+async function renderThumb(o, size) {
+  return (await drawLook(o, size, 600)).toDataURL('image/jpeg', 0.82);
+}
+/** Paints a look onto a canvas `width` px wide, with the board's own proportions. */
+async function drawLook(o, { W, H }, width) {
+  const scale = width / Math.max(1e-6, W);
+  const cw = width, ch = Math.round(H * scale);
   const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
   ctx.fillStyle = o.board; ctx.fillRect(0, 0, cw, ch);
@@ -1371,7 +1540,7 @@ async function renderThumb(o, { W, H }) {
     ctx.drawImage(img, -w / 2, -hgt / 2, w, hgt);
     ctx.restore();
   }
-  return cv.toDataURL('image/jpeg', 0.82);
+  return cv;
 }
 
 /* ------------------------------------------------------------------ tally + settings */
@@ -1387,12 +1556,13 @@ function openTally() {
     const uses = new Map();
     state.outfits.forEach((o) => new Set(o.pieces.map((p) => p.itemId)).forEach((id) => uses.set(id, (uses.get(id) || 0) + 1)));
     const mostStyled = state.items.filter((i) => uses.get(i.id)).sort((x, y) => uses.get(y.id) - uses.get(x.id))[0];
-    c.innerHTML = `<h2>Tally</h2>
+    const mostWorn = state.items.filter((i) => wears(i)).sort((x, y) => wears(y) - wears(x))[0];
+    c.innerHTML = `<h2>Stats</h2>
       <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'}</small></div>
       ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 80}ms"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}
       <div class="kv">
         <div><small>Looks</small><b>${state.outfits.length}</b></div>
-        <div><small>Most styled</small><b>${mostStyled ? esc(mostStyled.name) : 'None'}</b></div>
+        <div><small>${mostWorn ? 'Most worn' : 'Most styled'}</small><b>${mostWorn ? esc(mostWorn.name) : mostStyled ? esc(mostStyled.name) : 'None'}</b></div>
       </div>
       <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}, ${status}. Open the price list">
         <span class="vp-l">Closet value</span><span class="vp-v">${money(t.v)}</span>
@@ -1519,11 +1689,27 @@ function openPrices(onClose) {
   } });
 }
 
+const TEXT_SIZES = [[1, 'Default'], [1.12, 'Large'], [1.25, 'Larger']];
 function openSettings() {
   const c = h(`<div><h2>Settings</h2>
+    <div class="field"><label id="set-theme">Appearance</label><div class="seg three" role="group" aria-labelledby="set-theme">
+      ${[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-theme-opt="${k}">${l}</button>`).join('')}</div></div>
+    <div class="field"><label id="set-text">Text size</label><div class="seg three" role="group" aria-labelledby="set-text">
+      ${TEXT_SIZES.map(([v, l]) => `<button data-text-opt="${v}">${l}</button>`).join('')}</div></div>
+    <div class="opt"><span id="set-contrast">Higher contrast</span><button class="switch" role="switch" data-a="contrast" aria-labelledby="set-contrast"></button></div>
+    <div class="opt" style="margin-bottom:22px"><span id="set-motion">Reduce motion</span><button class="switch" role="switch" data-a="motion" aria-labelledby="set-motion"></button></div>
     <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="exp">Backup</button><button class="btn soft" data-a="imp">Restore</button></div>
     <button class="btn ghost block" data-a="wipe">Clear everything</button></div>`);
   const s = sheet(c);
+  const sync = () => {
+    $$('[data-theme-opt]', c).forEach((b) => { const on = b.dataset.themeOpt === prefs.theme; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
+    $$('[data-text-opt]', c).forEach((b) => { const on = Number(b.dataset.textOpt) === prefs.text; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
+    for (const k of ['contrast', 'motion']) { const b = $(`[data-a=${k}]`, c); b.classList.toggle('on', prefs[k]); b.setAttribute('aria-checked', String(prefs[k])); }
+  };
+  $$('[data-theme-opt]', c).forEach((b) => press(b, { tap: () => { prefs.theme = b.dataset.themeOpt; applyPrefs(); sync(); }, hapticTap: 'select' }));
+  $$('[data-text-opt]', c).forEach((b) => press(b, { tap: () => { prefs.text = Number(b.dataset.textOpt); applyPrefs(); sync(); moveTabInd(); }, hapticTap: 'select' }));
+  for (const k of ['contrast', 'motion']) press($(`[data-a=${k}]`, c), { tap: () => { prefs[k] = !prefs[k]; applyPrefs(); sync(); }, hapticTap: 'select' });
+  sync();
   press($('[data-a=exp]', c), { tap: exportData });
   press($('[data-a=imp]', c), { tap: () => { const f = $('#file-import'); f.value = ''; f.onchange = () => f.files[0] && importData(f.files[0]).then(() => s.close()); f.click(); } });
   press($('[data-a=wipe]', c), { tap: async () => {
@@ -1574,16 +1760,22 @@ function bindChrome() {
   press($('#tally-tab'), { tap: openTally, long: () => openPrices(), hapticTap: 'select' });
   const fab = $('#fab');
   press(fab, {
-    tap: () => (state.view === 'outfits' ? openEditor() : openAdd()),
-    long: (e) => contextMenu(fab, 'Add', [
+    // the + offers the two things there are to make
+    tap: (e) => contextMenu(fab, null, [
+      { icon: 'top', label: 'Add clothes', run: () => openAdd() },
+      { icon: 'look', label: 'Create a look', run: () => openEditor() },
+    ], e),
+    // held down: the shortcuts
+    long: (e) => contextMenu(fab, null, [
       { icon: 'camera', label: 'Take photo', run: () => quickPick('camera') },
       { icon: 'image', label: 'Choose photos', run: () => quickPick('library') },
-      { icon: 'look', label: 'New look', run: () => openEditor() },
+      { icon: 'look', label: 'Create a look', run: () => openEditor() },
       { icon: 'sparkle', label: 'Surprise me', run: surpriseLook },
     ], e),
-    hapticTap: 'medium',
+    hapticTap: null, // the menu gives its own
   });
   press($('#settings-btn'), { tap: openSettings, long: openTally });
+  press($('#search-btn'), { tap: () => toggleSearch(), hapticTap: 'select' });
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || !stack.length) return;
     const top = stack[stack.length - 1];
@@ -1604,6 +1796,8 @@ function quickPick(kind) {
 }
 
 (async function boot() {
+  applyPrefs(false);
+  window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => applyPrefs(false));
   bindChrome();
   await load();
   render();
@@ -1614,4 +1808,4 @@ function quickPick(kind) {
 })();
 
 // exposed for debugging / tests
-window.__closet = { state, openAdd, openEditor };
+window.__closet = { state, openAdd, openEditor, suggestLook, pairScore };
