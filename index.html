@@ -3,8 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-  <meta name="theme-color" content="#f4f1ec" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#1f1d1b" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#8b7558" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -15,40 +14,41 @@
   <link rel="apple-touch-icon" href="icons/icon-180.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500&family=Belleza&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
   <div id="app">
     <header class="top">
-      <div class="top-text">
-        <p class="eyebrow" id="greeting">good morning</p>
-        <h1 class="title" id="view-title">my closet</h1>
-      </div>
-      <button class="icon-btn" id="settings-btn" aria-label="Settings" data-long="settings">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      <span class="wordmark">Closet</span>
+      <button class="icon-btn" id="settings-btn" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.6"/><circle cx="8" cy="17" r="2.6"/></svg>
       </button>
     </header>
 
     <main id="views">
-      <section class="view active" id="view-closet" data-title="my closet"></section>
-      <section class="view" id="view-outfits" data-title="looks"></section>
+      <h1 class="title" id="view-title">Pieces</h1>
+      <section class="view active" id="view-closet" data-title="Pieces"></section>
+      <section class="view" id="view-outfits" data-title="Looks"></section>
     </main>
 
     <nav class="tabbar" id="tabbar">
-      <button class="tab active" data-view="closet" aria-label="Closet">
-        <svg viewBox="0 0 24 24"><path d="M12 5.5a1.8 1.8 0 1 0-1.8-1.8"/><path d="M12 5.5v1.2L3.4 13a1.2 1.2 0 0 0 .7 2.2h15.8a1.2 1.2 0 0 0 .7-2.2L12 6.7"/></svg>
-        <span>closet</span>
-      </button>
-      <button class="tab" data-view="outfits" aria-label="Looks">
-        <svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="9" rx="2"/><rect x="13.5" y="3.5" width="7" height="5" rx="2"/><rect x="13.5" y="11.5" width="7" height="9" rx="2"/><rect x="3.5" y="15.5" width="7" height="5" rx="2"/></svg>
-        <span>looks</span>
-      </button>
-      <button class="tab" id="tally-tab" aria-label="Tally">
-        <svg viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg>
-        <span>tally</span>
-      </button>
-      <button class="fab" id="fab" aria-label="Add piece">
+      <div class="tabs glass" id="tabs">
+        <span class="tab-ind" id="tab-ind"></span>
+        <button class="tab active" data-view="closet" aria-label="Closet">
+          <svg viewBox="0 0 24 24"><path d="M12 5.5a1.8 1.8 0 1 0-1.8-1.8"/><path d="M12 5.5v1.2L3.4 13a1.2 1.2 0 0 0 .7 2.2h15.8a1.2 1.2 0 0 0 .7-2.2L12 6.7"/></svg>
+          <span>Closet</span>
+        </button>
+        <button class="tab" data-view="outfits" aria-label="Looks">
+          <svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="9" rx="1"/><rect x="13.5" y="3.5" width="7" height="5" rx="1"/><rect x="13.5" y="11.5" width="7" height="9" rx="1"/><rect x="3.5" y="15.5" width="7" height="5" rx="1"/></svg>
+          <span>Looks</span>
+        </button>
+        <button class="tab" id="tally-tab" aria-label="Tally">
+          <svg viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg>
+          <span>Tally</span>
+        </button>
+      </div>
+      <button class="fab glass" id="fab" aria-label="Add">
         <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
       </button>
     </nav>

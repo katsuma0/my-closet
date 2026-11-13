@@ -12,7 +12,8 @@ const CATS = {
   acc: { label: 'Accessories', subs: ['Bags', 'Hats', 'Jewelry', 'Belts', 'Scarves', 'Sunglasses', 'Watches'] },
 };
 const CAT_ORDER = ['top', 'bottom', 'shoes', 'acc'];
-const BOARD_COLORS = ['#f7f3ec', '#eef0e8', '#f3ebe6', '#eaeef0', '#efebf2', '#2e2b28'];
+const BOARD = [['Mist', '#f6f6f5'], ['White', '#ffffff'], ['Ivory', '#f1ede6'], ['Sand', '#e6dfd3'], ['Stone', '#d3ccc0'], ['Night', '#1d1d1b']];
+const BOARD_COLORS = BOARD.map((b) => b[1]);
 
 const ICON = {
   top: '<path d="M8 4 3.5 6.5l1.8 3.6L7.5 9v11h9V9l2.2 1.1 1.8-3.6L16 4c-.6 1.4-2.2 2.3-4 2.3S8.6 5.4 8 4z"/>',
@@ -142,11 +143,56 @@ function sheet(content, { full = false, onClose } = {}) {
       syncTabbar();
     },
   };
-  if (!full) scrim.addEventListener('click', () => api.close());
-  // drag-to-dismiss from the grabber zone
   if (!full) {
+    scrim.addEventListener('click', () => api.close());
+    // let go: far enough or fast enough puts the sheet away, otherwise it springs back
+    const settle = (dy, v = 0) => {
+      el.style.transition = '';
+      scrim.style.opacity = '';
+      if (dy > Math.min(150, el.offsetHeight * 0.3) || (dy > 24 && v > 0.5)) { haptic('light'); (api.dismiss || api.close)(); }
+      else el.style.transform = '';
+    };
+    const follow = (dy) => {
+      el.style.transform = `translateY(${dy}px)`;
+      scrim.style.opacity = String(Math.max(0.2, 1 - dy / Math.max(1, el.offsetHeight)));
+    };
+
+    // touch: swipe down anywhere on the sheet while its content is scrolled to the top
+    let t0 = null;
+    el.addEventListener('touchstart', (e) => {
+      t0 = null;
+      if (closed || e.touches.length !== 1 || e.target.closest('input[type=range], .slider-row')) return;
+      const t = e.touches[0];
+      t0 = { x: t.clientX, y: t.clientY, on: false, d: 0, v: 0, lastY: t.clientY, lastT: performance.now() };
+    }, { passive: true });
+    el.addEventListener('touchmove', (e) => {
+      if (!t0) return;
+      const t = e.touches[0];
+      if (!t0.on) {
+        const dx = t.clientX - t0.x, dy = t.clientY - t0.y;
+        // decided on the very first move, before the browser starts a scroll of its own
+        if (dy <= 0 || Math.abs(dx) > Math.abs(dy) || el.scrollTop > 0) { t0 = null; return; }
+        t0.on = true;
+        el.style.transition = 'none';
+      }
+      if (e.cancelable) e.preventDefault();
+      t0.d = Math.max(0, t.clientY - t0.y);
+      const now = performance.now(), dt = now - t0.lastT;
+      if (dt > 4) { t0.v = (t.clientY - t0.lastY) / dt; t0.lastY = t.clientY; t0.lastT = now; }
+      follow(t0.d);
+    }, { passive: false });
+    const touchEnd = () => {
+      if (!t0) return;
+      const { on, d, v } = t0; t0 = null;
+      if (on) settle(d, v);
+    };
+    el.addEventListener('touchend', touchEnd);
+    el.addEventListener('touchcancel', touchEnd);
+
+    // mouse: drag the grabber area
     let y0 = null, dy = 0;
     el.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'touch') return;
       const r = el.getBoundingClientRect();
       if (e.clientY - r.top > 44 || el.scrollTop > 0) return;
       y0 = e.clientY; dy = 0; el.style.transition = 'none';
@@ -155,12 +201,12 @@ function sheet(content, { full = false, onClose } = {}) {
     el.addEventListener('pointermove', (e) => {
       if (y0 === null) return;
       dy = Math.max(0, e.clientY - y0);
-      el.style.transform = `translateY(${dy}px)`;
+      follow(dy);
     });
     const end = () => {
       if (y0 === null) return;
-      el.style.transition = ''; y0 = null;
-      if (dy > 110) { haptic('light'); api.close(); } else el.style.transform = '';
+      y0 = null;
+      settle(dy);
     };
     el.addEventListener('pointerup', end);
     el.addEventListener('pointercancel', end);
@@ -232,7 +278,7 @@ function toast(msg) {
 
 function confirmSheet(title, text, okLabel = 'Delete') {
   return new Promise((resolve) => {
-    const c = h(`<div><h2>${esc(title)}</h2><p class="sub">${esc(text)}</p>
+    const c = h(`<div><h2>${esc(title)}</h2>${text ? `<p class="sub">${esc(text)}</p>` : ''}
       <div class="row-btns"><button class="btn soft" data-a="no">Keep</button><button class="btn danger" data-a="yes">${esc(okLabel)}</button></div></div>`);
     let answered = false;
     const s = sheet(c, { onClose: () => { if (!answered) resolve(false); } });
@@ -246,7 +292,7 @@ function confirmSheet(title, text, okLabel = 'Delete') {
 function setView(v) {
   if (state.view === v) return;
   state.view = v;
-  $$('.tab[data-view]').forEach((t) => t.classList.toggle('active', t.dataset.view === v));
+  markTab(v);
   $$('.view').forEach((s) => s.classList.toggle('active', s.id === 'view-' + v));
   const title = $('#view-title');
   title.classList.add('swap');
@@ -255,10 +301,16 @@ function setView(v) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function greeting() {
-  const hr = new Date().getHours();
-  const g = hr < 5 ? 'still up' : hr < 12 ? 'good morning' : hr < 17 ? 'good afternoon' : hr < 22 ? 'good evening' : 'good night';
-  $('#greeting').textContent = g;
+// Which tab the glass drop sits under ('tally' while the tally sheet is up).
+function markTab(key) {
+  $$('#tabs .tab').forEach((t) => t.classList.toggle('active', (t.dataset.view || 'tally') === key));
+  moveTabInd();
+}
+function moveTabInd() {
+  const act = $('#tabs .tab.active'), ind = $('#tab-ind');
+  if (!act || !ind) return;
+  ind.style.width = act.offsetWidth + 'px';
+  ind.style.transform = `translateX(${act.offsetLeft}px)`;
 }
 
 function render() {
@@ -305,27 +357,23 @@ function totals() {
 function renderCloset() {
   const root = $('#view-closet');
   root.innerHTML = '';
-  const t = totals();
-  const maxN = Math.max(1, ...CAT_ORDER.map((c) => t.by[c].n));
-  const nLooks = state.outfits.length;
-  const tally = h(`<button class="tally">
-      <div><div class="label">in your closet</div><div class="value">${t.n} piece${t.n === 1 ? '' : 's'}</div>
-      <div class="count">${nLooks ? `${nLooks} look${nLooks === 1 ? '' : 's'} styled` : 'no looks yet'}</div></div>
-      <div class="tally-bars">${CAT_ORDER.map((c) => `<i style="height:${8 + 36 * (t.by[c].n / maxN)}px"></i>`).join('')}</div>
-    </button>`);
-  press(tally, { tap: openTally, long: openTally });
-  root.append(tally);
 
-  // category chips
-  const chips = h('<div class="chips"></div>');
+  if (!state.items.length) {
+    const e = h(`<div class="empty"><h3>Your closet is empty</h3><button class="btn">${svg('plus')} Add a piece</button></div>`);
+    press($('.btn', e), { tap: () => openAdd() });
+    root.append(e);
+    return;
+  }
+
+  // categories
+  const chips = h('<div class="chips nav"></div>');
   const mk = (key, label) => {
-    const count = key === 'all' ? state.items.length : state.items.filter((i) => i.cat === key).length;
-    const c = h(`<button class="chip ${state.filterCat === key ? 'active' : ''}">${label}${count ? ` <span style="opacity:.5">${count}</span>` : ''}</button>`);
+    const c = h(`<button class="chip ${state.filterCat === key ? 'active' : ''}">${label}</button>`);
     press(c, {
       tap: () => { state.filterCat = key; state.filterSub = null; renderCloset(); },
       long: key === 'all' ? null : (e) => contextMenu(c, CATS[key].label, [
         { icon: 'plus', label: `Add ${CATS[key].label.toLowerCase()}`, run: () => openAdd({ cat: key }) },
-        { icon: 'look', label: 'Start a look with these', run: () => { state.filterCat = key; openEditor(); } },
+        { icon: 'look', label: 'New look', run: () => { state.filterCat = key; openEditor(); } },
       ], e),
       hapticTap: 'select',
     });
@@ -335,43 +383,32 @@ function renderCloset() {
   CAT_ORDER.forEach((k) => chips.append(mk(k, CATS[k].label)));
   root.append(chips);
 
-  const subs = h(`<div class="subchips ${state.filterCat !== 'all' ? 'open' : ''}"><div class="chips"></div></div>`);
-  if (state.filterCat !== 'all') {
-    const used = new Set(state.items.filter((i) => i.cat === state.filterCat).map((i) => i.sub).filter(Boolean));
-    const list = [...new Set([...CATS[state.filterCat].subs.filter((s) => used.has(s)), ...used])];
-    const row = $('.chips', subs);
-    if (!list.length) row.append(h('<span style="font-size:13px;color:var(--ink-3);padding:6px 4px">no subcategories yet</span>'));
-    list.forEach((s) => {
-      const c = h(`<button class="chip small ${state.filterSub === s ? 'active' : ''}">${esc(s)}</button>`);
-      press(c, { tap: () => { state.filterSub = state.filterSub === s ? null : s; renderCloset(); }, hapticTap: 'select' });
-      row.append(c);
-    });
-  }
+  // types within the chosen category (only those in use)
+  const used = state.filterCat === 'all' ? [] : [...new Set(state.items.filter((i) => i.cat === state.filterCat).map((i) => i.sub).filter(Boolean))];
+  const list = used.length ? [...new Set([...CATS[state.filterCat].subs.filter((s) => used.includes(s)), ...used])] : [];
+  const subs = h(`<div class="subchips ${list.length ? 'open' : ''}"><div class="chips"></div></div>`);
+  list.forEach((s) => {
+    const c = h(`<button class="chip small ${state.filterSub === s ? 'active' : ''}">${esc(s)}</button>`);
+    press(c, { tap: () => { state.filterSub = state.filterSub === s ? null : s; renderCloset(); }, hapticTap: 'select' });
+    $('.chips', subs).append(c);
+  });
   root.append(subs);
 
   const items = state.items
     .filter((i) => state.filterCat === 'all' || i.cat === state.filterCat)
     .filter((i) => !state.filterSub || i.sub === state.filterSub)
     .sort((a, b) => b.created - a.created);
-
-  if (!state.items.length) {
-    const e = h(`<div class="empty"><div class="orb"></div><h3>a quiet, empty closet</h3>
-      <p>Photograph a piece on a light, plain background — it’ll become a little sticker here.</p>
-      <button class="btn">${svg('plus')} add your first piece</button></div>`);
-    press($('.btn', e), { tap: () => openAdd() });
-    root.append(e);
-    return;
-  }
   if (!items.length) {
-    root.append(h('<div class="empty"><h3>nothing here yet</h3><p>Long-press a category to add straight into it.</p></div>'));
+    root.append(h('<div class="empty"><p>No pieces here yet</p></div>'));
     return;
   }
   const grid = h('<div class="grid"></div>');
   items.forEach((it, idx) => {
     const card = h(`<button class="piece" style="animation-delay:${Math.min(idx, 12) * 35}ms">
-      <img class="sticker" src="${it.sticker}" alt="${esc(it.name)}" loading="lazy" />
-      <div class="meta"><span class="name">${esc(it.name)}</span></div>
-      <div class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</div></button>`);
+      <span class="tile"><img class="sticker" src="${it.sticker}" alt="" loading="lazy" /></span>
+      <span class="name">${esc(it.name)}</span>
+      <span class="kind">${esc(it.sub || CATS[it.cat]?.label || '')}</span>
+      <span class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</span></button>`);
     press(card, { tap: () => openDetail(it), long: (e) => itemMenu(it, card, e) });
     grid.append(card);
   });
@@ -380,8 +417,8 @@ function renderCloset() {
 
 function itemMenu(it, anchor, e) {
   contextMenu(anchor, it.name, [
-    { icon: 'edit', label: 'Edit details', run: () => openAdd({ item: it }) },
-    { icon: 'look', label: 'Style a look with this', run: () => openEditor(null, [it.id]) },
+    { icon: 'edit', label: 'Edit', run: () => openAdd({ item: it }) },
+    { icon: 'look', label: 'Style a look', run: () => openEditor(null, [it.id]) },
     { icon: 'copy', label: 'Duplicate', run: () => duplicateItem(it) },
     { icon: 'trash', label: 'Delete', danger: true, run: () => deleteItem(it) },
   ], e);
@@ -391,35 +428,30 @@ async function duplicateItem(it) {
   const copy = { ...it, id: uid(), created: Date.now(), name: it.name + ' (copy)' };
   await db.put('items', copy);
   state.items.push(copy);
-  haptic('success'); toast('duplicated');
+  haptic('success'); toast('Duplicated');
   render();
 }
 
 async function deleteItem(it) {
-  if (!(await confirmSheet('Let it go?', `“${it.name}” will be removed from your closet.`))) return;
+  if (!(await confirmSheet('Delete this piece?', it.name))) return;
   await db.del('items', it.id);
   state.items = state.items.filter((i) => i.id !== it.id);
-  toast('removed'); render();
+  toast('Deleted'); render();
 }
 
 /* ------------------------------------------------------------------ item detail */
 
 function openDetail(it) {
-  const outfitsWith = state.outfits.filter((o) => o.pieces.some((p) => p.itemId === it.id));
+  const cols = mainColors(it);
   const c = h(`<div>
     <div class="detail-img"><img src="${it.sticker}" alt="" /></div>
     <h2>${esc(it.name)}</h2>
-    <p class="sub">${esc(CATS[it.cat]?.label || '')}${it.sub ? ' · ' + esc(it.sub) : ''}</p>
-    <div class="kv">
-      <div><small>in looks</small><b>${outfitsWith.length}</b></div>
-      <div><small>added</small><b>${new Date(it.created).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</b></div>
-    </div>
-    <div class="field"><span class="field-label">main colours</span><div class="swatches">${mainColors(it).map((c) => `<button class="sw" data-c="${c}" style="background:${c}" aria-label="${colorName(c)}"></button>`).join('')}<span class="sw-names">${mainColors(it).map(colorName).join(', ')}</span></div></div>
-    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="edit">${svg('edit')} Edit</button><button class="btn" data-a="look">${svg('look')} Style it</button></div>
-    <button class="btn ghost block" data-a="del">${svg('trash')} Delete</button>
+    <p class="sub kind">${esc(it.sub || CATS[it.cat]?.label || '')}</p>
+    ${cols.length ? `<div class="field"><div class="swatches">${cols.map((x) => `<span class="sw" style="background:${x}"></span>`).join('')}<span class="sw-names">${cols.map(colorName).join(', ')}</span></div></div>` : ''}
+    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="edit">Edit</button><button class="btn" data-a="look">Style</button></div>
+    <button class="btn ghost block" data-a="del">Delete</button>
   </div>`);
   const s = sheet(c);
-  $$('.sw', c).forEach((b) => press(b, { tap: () => toast(colorName(b.dataset.c)), hapticTap: 'select' }));
   press($('[data-a=edit]', c), { tap: () => { s.close(); openAdd({ item: it }); } });
   press($('[data-a=look]', c), { tap: () => { s.close(); openEditor(null, [it.id]); } });
   press($('[data-a=del]', c), { tap: () => { s.close(); deleteItem(it); } });
@@ -480,14 +512,14 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
       erasing = !erasing;
       eraseBtn.classList.toggle('active', erasing);
       if (erasing) {
-        toast('tap any leftover background');
+        toast('Tap leftover background');
         if (!mask) { await process(); return; } // first use on an untouched sticker
       }
       show();
     },
-    long: () => { cut.seeds.length = 0; toast('erase marks cleared'); process(); },
+    long: () => { cut.seeds.length = 0; toast('Cleared'); process(); },
   });
-  press($('[data-a=undo]', el), { tap: () => { if (cut.seeds.length) { cut.seeds.pop(); process(); } else toast('nothing to undo'); } });
+  press($('[data-a=undo]', el), { tap: () => { if (cut.seeds.length) { cut.seeds.pop(); process(); } else toast('Nothing to undo'); } });
   let lastTick = cut.tolerance;
   range.addEventListener('input', () => {
     cut.tolerance = +range.value;
@@ -529,7 +561,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   };
 
   const c = h(`<div>
-    <div class="sheet-head"><h2>${item ? 'edit piece' : 'new piece'}</h2></div>
+    <div class="sheet-head"><h2>${item ? 'Edit Piece' : 'New Piece'}</h2></div>
     <div data-step="photo"></div>
     <div data-step="details"></div>
   </div>`);
@@ -542,11 +574,10 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     photo.innerHTML = '';
     const p = h(`<div class="pick">
       <div class="pick-btns">
-        <button class="btn" data-a="cam">${svg('camera')}<span>take photo</span></button>
-        <button class="btn soft" data-a="lib">${svg('image')}<span>choose photos</span></button>
+        <button class="btn" data-a="cam">${svg('camera')}<span>Take photo</span></button>
+        <button class="btn soft" data-a="lib">${svg('image')}<span>Choose photos</span></button>
       </div>
-      <div class="tip"><span class="sun">${svg('sun')}</span><span><b>For the cleanest cut-out</b>, lay the piece flat on a light, plain background (a bedsheet, floor or wall), in soft even light, with a little space around it.</span></div>
-      <div class="tip many"><span class="sun">${svg('look')}</span><span><b>Adding lots?</b> Choose several photos at once and they’ll all be cut out and added together.</span></div>
+      <p class="pick-hint">Use a light, plain background</p>
     </div>`);
     press($('[data-a=cam]', p), { tap: () => pickFile('camera') });
     press($('[data-a=lib]', p), { tap: () => pickFile('library') });
@@ -576,7 +607,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   async function useFile(f) {
     let shot;
     try { shot = await photoFromFile(f); } catch {
-      haptic('warning'); toast('that photo could not be read');
+      haptic('warning'); toast('Photo could not be read');
       if (!st.raster && !item) renderPick();
       return;
     }
@@ -590,7 +621,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
 
   function renderStage() {
     const re = h(`<button class="chip" data-a="re">${svg('image')} new photo</button>`);
-    press(re, { tap: () => pickFile('library'), long: (e) => contextMenu(re, 'new photo', [
+    press(re, { tap: () => pickFile('library'), long: (e) => contextMenu(re, 'New photo', [
       { icon: 'camera', label: 'Take photo', run: () => pickFile('camera') },
       { icon: 'image', label: 'Choose photo', run: () => pickFile('library') },
     ], e) });
@@ -600,12 +631,12 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   function renderDetails() {
     details.innerHTML = '';
     const d = h(`<div>
-      <div class="field"><label>category</label><div class="seg">${CAT_ORDER.map((k) => `<button data-cat="${k}" class="${st.cat === k ? 'active' : ''}">${svg(k)}${CATS[k].label}</button>`).join('')}</div></div>
-      <div class="field"><label>type</label><div class="wrap-chips" data-subs></div></div>
-      <div class="field"><label>name</label><input class="input" data-name placeholder="e.g. Linen shirt" value="${esc(st.name)}" maxlength="40" /></div>
-      ${item ? '' : `<div class="field"><label>price <span style="text-transform:none;letter-spacing:0">(optional — or add it later in the tally)</span></label><div class="price-wrap"><span>${esc(state.settings.currency)}</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
-      <div class="field"><label>main colours</label><div class="swatches" data-sw></div></div>
-      <button class="btn sage block" data-a="save">${svg('check')} ${item ? 'save changes' : 'add to closet'}</button>
+      <div class="field"><label>Category</label><div class="seg">${CAT_ORDER.map((k) => `<button data-cat="${k}" class="${st.cat === k ? 'active' : ''}">${svg(k)}${CATS[k].label}</button>`).join('')}</div></div>
+      <div class="field"><label>Type</label><div class="wrap-chips" data-subs></div></div>
+      <div class="field"><label>Name</label><input class="input" data-name placeholder="Name" value="${esc(st.name)}" maxlength="40" /></div>
+      ${item ? '' : `<div class="field"><label>Price (optional)</label><div class="price-wrap"><span>${esc(state.settings.currency)}</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
+      <div class="field"><label>Colours</label><div class="swatches" data-sw></div></div>
+      <button class="btn sage block" data-a="save">${item ? 'Save' : 'Add to closet'}</button>
     </div>`);
     details.append(d);
     $$('[data-cat]', d).forEach((b) => press(b, { tap: () => {
@@ -636,9 +667,9 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       press(b, { tap: () => { st.sub = st.sub === sname ? null : sname; renderSubs(); }, hapticTap: 'select' });
       wrap.append(b);
     });
-    const add = h('<button class="chip small add">+ custom</button>');
+    const add = h('<button class="chip small add">Custom</button>');
     press(add, { tap: () => {
-      const inp = h('<input class="input" style="height:34px;width:140px;border-radius:999px;font-size:14px" placeholder="type & enter" maxlength="20" />');
+      const inp = h('<input class="input" style="height:34px;width:140px;font-size:14px" placeholder="Type" maxlength="20" />');
       add.replaceWith(inp); inp.focus();
       const done = () => { const v = inp.value.trim(); if (v) { st.customSubs.push(v); st.sub = v; } renderSubs(); };
       inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(); });
@@ -659,12 +690,11 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     const sw = $('[data-sw]', details);
     if (!sw || !st.result) return;
     const cols = mainColors(st.result);
-    sw.innerHTML = cols.map((c) => `<span class="sw" style="background:${c}" title="${colorName(c)}"></span>`).join('') +
-      `<span style="align-self:center;font-size:13px;color:var(--ink-2);margin-left:4px">${cols.map(colorName).join(', ')}</span>`;
+    sw.innerHTML = cols.map((c) => `<span class="sw" style="background:${c}"></span>`).join('') + `<span class="sw-names">${cols.map(colorName).join(', ')}</span>`;
   }
 
   async function save() {
-    if (!st.result) { haptic('warning'); toast('add a photo first'); return; }
+    if (!st.result) { haptic('warning'); toast('Add a photo first'); return; }
     const colors = mainColors(st.result);
     const rec = {
       id: item?.id || uid(),
@@ -682,7 +712,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     if (i >= 0) state.items[i] = rec; else state.items.push(rec);
     imgCache.delete(rec.id);
     haptic('success');
-    toast(item ? 'saved' : 'added to your closet');
+    toast(item ? 'Saved' : 'Added');
     s.close();
     if (state.view !== 'closet') setView('closet'); else render();
   }
@@ -722,11 +752,11 @@ function openBatch(files, presetCat = null) {
       <h2 data-title></h2>
     </div>
     <div class="batch-progress"><div class="bar"><i data-bar></i></div><span data-status></span></div>
-    <div class="batch-all" role="group" aria-label="Set every photo at once"><span class="field-label">they’re all</span><div class="chips">${CAT_ORDER.map((k) => `<button class="chip small" data-all="${k}" aria-label="All ${CATS[k].label.toLowerCase()}" aria-pressed="false">${CATS[k].label}</button>`).join('')}</div></div>
+    <div class="batch-all" role="group" aria-label="Set every photo at once"><span class="field-label">Set all</span><div class="chips">${CAT_ORDER.map((k) => `<button class="chip small" data-all="${k}" aria-label="All ${CATS[k].label.toLowerCase()}" aria-pressed="false">${CATS[k].label}</button>`).join('')}</div></div>
     <div class="batch-list" data-list></div>
     <div class="batch-foot">
       <button class="btn block" data-a="save"></button>
-      <p class="batch-hint">tap a photo to fix its cut-out · names are filled in for you</p>
+      <p class="batch-hint">Tap a photo to fix its cut-out</p>
     </div>
   </div>`);
   const s = sheet(c, { full: true });
@@ -766,9 +796,9 @@ function openBatch(files, presetCat = null) {
       b.classList.toggle('active', b.dataset.cat === e.cat);
       b.setAttribute('aria-pressed', String(b.dataset.cat === e.cat));
     });
-    $('.b-name', e.el).textContent = !e.cat ? 'what is it?'
+    $('.b-name', e.el).textContent = !e.cat ? 'Choose a category'
       : e.result ? autoName(e.result.colors, e.cat, null)
-      : CATS[e.cat].label.toLowerCase();
+      : CATS[e.cat].label;
   }
 
   function sync() {
@@ -776,17 +806,17 @@ function openBatch(files, presetCat = null) {
     const done = l.filter((e) => e.status === 'done').length, cutting = l.length - done;
     const missing = l.filter((e) => !e.cat).length;
     const pieces = `${l.length} piece${l.length === 1 ? '' : 's'}`;
-    $('[data-title]', c).textContent = `add ${pieces}`;
+    $('[data-title]', c).textContent = `Add ${pieces}`;
     $('[data-bar]', c).style.width = `${l.length ? (done / l.length) * 100 : 100}%`;
     const notes = [];
-    if (failed) notes.push(`${failed} couldn’t be read`);
+    if (failed) notes.push(`${failed} unreadable`);
     if (overflow) notes.push(`first ${BATCH_MAX} only`);
-    $('[data-status]', c).textContent = [cutting ? `cutting out ${Math.min(done + 1, l.length)} of ${l.length}` : 'all cut out', ...notes].join(' · ');
+    $('[data-status]', c).textContent = [cutting ? `${Math.min(done + 1, l.length)} of ${l.length}` : 'Ready', ...notes].join(', ');
     const btn = $('[data-a=save]', c);
     btn.className = `btn block ${!cutting && !missing && !saving ? 'sage' : 'soft'}`;
-    btn.innerHTML = saving ? 'adding…' : missing ? `pick a category for ${missing === l.length ? (l.length === 1 ? 'it' : 'each one') : `${missing} more`}`
-      : cutting ? 'cutting out…'
-      : `${svg('check')} add ${pieces} to closet`;
+    btn.innerHTML = saving ? 'Adding' : missing ? `Choose ${missing} categor${missing === 1 ? 'y' : 'ies'}`
+      : cutting ? 'Cutting out'
+      : `Add ${pieces}`;
     $('.batch-all', c).style.display = l.length > 1 ? '' : 'none';
     $$('[data-all]', c).forEach((b) => {
       const on = l.length > 0 && l.every((e) => e.cat === b.dataset.all);
@@ -799,29 +829,28 @@ function openBatch(files, presetCat = null) {
     if (saving) return;
     live().forEach((e) => { e.cat = cat; paint(e); });
     sync();
-    toast(`all set to ${CATS[cat].label.toLowerCase()}`);
+    toast(`All ${CATS[cat].label.toLowerCase()}`);
   }
 
   function drop(e) {
     if (saving) return;
     e.status = 'gone'; e.file = null; e.result = null; e.original = null;
     paint(e); sync();
-    if (!live().length) { cancelled = true; s.close(); toast('nothing left to add'); }
+    if (!live().length) { cancelled = true; s.close(); toast('Nothing to add'); }
   }
 
   // The same cut-out editor as the one-piece form, for one photo of the batch.
   async function tune(e) {
     if (saving) return;
-    if (e.status !== 'done') { toast('still cutting this one out'); return; }
+    if (e.status !== 'done') { toast('Still cutting out'); return; }
     let raster;
-    try { raster = rasterize(await loadImage(e.original), 900); } catch { toast('that photo could not be reopened'); return; }
+    try { raster = rasterize(await loadImage(e.original), 900); } catch { toast('Photo could not be opened'); return; }
     if (e.status !== 'done' || saving) return;
     const cut = { raster, tolerance: e.cut.tolerance, seeds: [...e.cut.seeds], removeBg: e.cut.removeBg, result: e.result };
     let changed = false;
-    const t = h(`<div class="tuner"><h2>fix the cut-out</h2>
-      <p class="sub">slide towards strong to remove more background · tap to erase leftovers</p>
+    const t = h(`<div class="tuner"><h2>Fix Cut-out</h2>
       <div data-ed></div>
-      <div class="row-btns">${live().length > 1 ? '<button class="btn soft" data-a="all">use for all photos</button>' : ''}<button class="btn sage" data-a="ok">${svg('check')} done</button></div>
+      <div class="row-btns">${live().length > 1 ? '<button class="btn soft" data-a="all">Use for all</button>' : ''}<button class="btn sage" data-a="ok">Done</button></div>
     </div>`);
     const ts = sheet(t, { onClose: () => {
       if (!changed || e.status !== 'done') return;
@@ -844,7 +873,7 @@ function openBatch(files, presetCat = null) {
         else if (x.status === 'busy') x.redo = true;
       });
       entries.forEach(paint); sync();
-      toast('cutting every photo out again at this strength');
+      toast('Cutting all photos again');
       pump();
     } });
   }
@@ -860,7 +889,7 @@ function openBatch(files, presetCat = null) {
       first.el.classList.remove('nudge'); void first.el.offsetWidth; first.el.classList.add('nudge');
       return;
     }
-    if (l.some((e) => e.status !== 'done')) { haptic('warning'); toast('still cutting out — one moment'); return; }
+    if (l.some((e) => e.status !== 'done')) { haptic('warning'); toast('Still cutting out'); return; }
     saving = true; sync();
     const now = Date.now();
     // every record is built up front, so nothing the user taps while it saves can change the batch
@@ -889,13 +918,13 @@ function openBatch(files, presetCat = null) {
     }
     if (added < l.length) {
       haptic('warning');
-      toast(added ? `storage is full — added ${added} of ${l.length}` : 'storage is full — nothing was added');
+      toast(added ? `Storage full. Added ${added} of ${l.length}` : 'Storage full. Nothing added');
       entries.forEach(paint); sync(); render();
       return;
     }
     cancelled = true;
     haptic('success');
-    toast(`${added} piece${added === 1 ? '' : 's'} added to your closet`);
+    toast(`${added} piece${added === 1 ? '' : 's'} added`);
     s.close();
     if (state.view !== 'closet') setView('closet'); else render();
   }
@@ -903,7 +932,7 @@ function openBatch(files, presetCat = null) {
   async function tryClose() {
     if (saving) return;
     const n = live().length;
-    if (n && !(await confirmSheet('Leave these behind?', `None of the ${n} photo${n === 1 ? '' : 's'} will be added.`, 'Discard'))) return;
+    if (n && !(await confirmSheet('Discard these photos?', '', 'Discard'))) return;
     cancelled = true;
     s.close();
   }
@@ -948,14 +977,14 @@ function openBatch(files, presetCat = null) {
       cancelled = true;
       // close anything stacked on top first (the "Leave these behind?" question would be left dangling)
       while (stack.includes(s) && stack[stack.length - 1] !== s) stack[stack.length - 1].close();
-      haptic('warning'); toast('none of those photos could be read');
+      haptic('warning'); toast('No photos could be read');
       s.close();
     }
   }
 
   entries.forEach(paint);
   sync();
-  if (overflow) toast(`first ${BATCH_MAX} photos only — add the rest next`);
+  if (overflow) toast(`First ${BATCH_MAX} photos only`);
   pump();
 }
 
@@ -973,8 +1002,8 @@ function renderOutfits() {
   const root = $('#view-outfits');
   root.innerHTML = '';
   const grid = h('<div class="looks"></div>');
-  const nw = h(`<button class="look new"><div><div class="plus">${svg('plus')}</div><span>new look</span></div></button>`);
-  press(nw, { tap: () => openEditor(), long: (e) => contextMenu(nw, 'new look', [
+  const nw = h(`<button class="look new"><div><div class="plus">${svg('plus')}</div><span>New look</span></div></button>`);
+  press(nw, { tap: () => openEditor(), long: (e) => contextMenu(nw, 'New look', [
     { icon: 'sparkle', label: 'Surprise me', run: () => surpriseLook() },
     { icon: 'look', label: 'Blank board', run: () => openEditor() },
   ], e) });
@@ -993,7 +1022,7 @@ function renderOutfits() {
         await db.put('outfits', copy); state.outfits.push(copy); haptic('success'); renderOutfits();
       } },
       { icon: 'trash', label: 'Delete', danger: true, run: async () => {
-        if (!(await confirmSheet('Delete this look?', `“${o.name}” will be gone, your pieces stay.`))) return;
+        if (!(await confirmSheet('Delete this look?', o.name))) return;
         await db.del('outfits', o.id); state.outfits = state.outfits.filter((x) => x.id !== o.id); renderOutfits();
       } },
     ], e) });
@@ -1001,14 +1030,14 @@ function renderOutfits() {
   });
   root.append(grid);
   if (!state.outfits.length) {
-    root.append(h(`<div class="empty" style="padding-top:30px"><h3>compose your first look</h3><p>${state.items.length ? 'Pick pieces from your closet and arrange them like a mood board.' : 'Add a few pieces to your closet first, then come back here to collage.'}</p></div>`));
+    root.append(h('<div class="empty" style="padding-top:44px"><p>No looks yet</p></div>'));
   }
 }
 
 function surpriseLook() {
   const pick = (cat) => { const l = state.items.filter((i) => i.cat === cat); return l[Math.floor(Math.random() * l.length)]; };
   const ids = ['top', 'bottom', 'shoes', 'acc'].map(pick).filter(Boolean).map((i) => i.id);
-  if (!ids.length) { toast('add some pieces first'); return; }
+  if (!ids.length) { toast('Add pieces first'); return; }
   openEditor(null, ids);
 }
 
@@ -1031,7 +1060,7 @@ const DEFAULT_LAYOUT = {
 
 function openEditor(outfit = null, startIds = []) {
   const o = outfit ? structuredClone(outfit) : {
-    id: uid(), name: 'untitled look', pieces: [], board: BOARD_COLORS[0], updated: Date.now(),
+    id: uid(), name: 'Untitled', pieces: [], board: BOARD_COLORS[0], updated: Date.now(),
   };
   let selected = null;
   let dirty = !outfit && startIds.length > 0;
@@ -1042,16 +1071,16 @@ function openEditor(outfit = null, startIds = []) {
       <input class="input" data-name value="${esc(o.name)}" maxlength="40" />
       <button class="round dark" data-a="save" aria-label="Save">${svg('check')}</button>
     </div>
-    <div class="board"><div class="hint">tap + to add pieces<br/>drag · pinch · twist</div></div>
+    <div class="board"><div class="hint">Tap + to add pieces</div></div>
     <div class="editor-bar">
       <button class="round dark" data-a="add" aria-label="Add pieces">${svg('plus')}</button>
       <button class="round" data-a="bg" aria-label="Board colour"><span data-bgdot style="width:22px;height:22px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--ink-3)"></span></button>
       <button class="round" data-a="shuffle" aria-label="Tidy layout">${svg('sparkle')}</button>
-      <div class="total"><small>in this look</small><b data-total>0 pieces</b></div>
+      <div class="total"><b data-total>0 pieces</b></div>
     </div>
     <div class="palette-tray">
-      <div class="row"><span class="lbl">colours</span><div class="pill-strip" data-in></div></div>
-      <div class="note" data-note>the colours in this look · tap one for its name</div>
+      <div class="row"><span class="lbl">Colours</span><div class="pill-strip" data-in></div></div>
+      <div class="note" data-note></div>
     </div>
   </div>`);
   const s = sheet(c, { full: true });
@@ -1225,7 +1254,7 @@ function openEditor(outfit = null, startIds = []) {
     press(b, {
       tap: () => {
         const n = state.items.filter((i) => mainColors(i).some((x) => closeness(x, col) > 0.72)).length;
-        $('[data-note]', c).textContent = `${colorName(col)}${n ? ` — on ${n} piece${n === 1 ? '' : 's'} in your closet · long-press to see them` : ''}`;
+        $('[data-note]', c).textContent = `${colorName(col)}${n ? `, ${n} piece${n === 1 ? '' : 's'}` : ''}`;
       },
       long: () => openPicker(col),
       hapticTap: 'select',
@@ -1234,17 +1263,12 @@ function openEditor(outfit = null, startIds = []) {
   }
 
   // ----- toolbar
-  press($('[data-a=add]', c), { tap: () => openPicker(), long: (e) => contextMenu($('[data-a=add]', c), 'add', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => openPicker(null, k) })), e) });
+  press($('[data-a=add]', c), { tap: () => openPicker(), long: (e) => contextMenu($('[data-a=add]', c), 'Add', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => openPicker(null, k) })), e) });
   const bgBtn = $('[data-a=bg]', c);
   press(bgBtn, {
     tap: () => { o.board = BOARD_COLORS[(BOARD_COLORS.indexOf(o.board) + 1) % BOARD_COLORS.length]; paintBoard(); dirty = true; },
-    long: (e) => contextMenu(bgBtn, 'board colour', [
-      { icon: 'swatch', label: 'Linen', run: () => setBoard('#f7f3ec') },
-      { icon: 'swatch', label: 'Sage mist', run: () => setBoard('#eef0e8') },
-      { icon: 'swatch', label: 'Blush clay', run: () => setBoard('#f3ebe6') },
-      { icon: 'swatch', label: 'Fog blue', run: () => setBoard('#eaeef0') },
-      { icon: 'swatch', label: 'Lilac', run: () => setBoard('#efebf2') },
-      { icon: 'swatch', label: 'Night', run: () => setBoard('#2e2b28') },
+    long: (e) => contextMenu(bgBtn, 'Board', [
+      ...BOARD.map(([label, col]) => ({ icon: 'swatch', label, run: () => setBoard(col) })),
     ], e),
   });
   function setBoard(col) { o.board = col; paintBoard(); dirty = true; }
@@ -1262,19 +1286,19 @@ function openEditor(outfit = null, startIds = []) {
   }, hapticTap: null });
 
   async function save() {
-    o.name = nameInp.value.trim() || 'untitled look';
+    o.name = nameInp.value.trim() || 'Untitled';
     o.updated = Date.now();
     o.thumb = await renderThumb(o, bsize());
     await db.put('outfits', o);
     const i = state.outfits.findIndex((x) => x.id === o.id);
     if (i >= 0) state.outfits[i] = o; else state.outfits.push(o);
     dirty = false;
-    haptic('success'); toast('look saved');
+    haptic('success'); toast('Saved');
   }
   press($('[data-a=save]', c), { tap: async () => { await save(); s.close(); setView('outfits'); renderOutfits(); }, hapticTap: null });
   press($('[data-a=back]', c), { tap: async () => {
     if (dirty && o.pieces.length) {
-      const keep = await confirmSheet('Leave without saving?', 'Your arrangement will be lost.', 'Discard');
+      const keep = await confirmSheet('Discard changes?', '', 'Discard');
       if (!keep) return;
     }
     s.close();
@@ -1283,8 +1307,7 @@ function openEditor(outfit = null, startIds = []) {
   // ----- piece picker
   function openPicker(matchColor = null, onlyCat = null) {
     let cat = onlyCat || 'all';
-    const pc = h(`<div><h2>${matchColor ? 'pieces that match' : 'add pieces'}</h2>
-      ${matchColor ? `<p class="sub"><span class="sw" style="display:inline-block;width:14px;height:14px;vertical-align:-2px;background:${matchColor}"></span> ${colorName(matchColor)} and close tones</p>` : '<p class="sub">tap to add or remove · long-press for details</p>'}
+    const pc = h(`<div><h2>${matchColor ? `<span class="sw" style="display:inline-block;width:20px;height:20px;vertical-align:-1px;margin-right:10px;background:${matchColor}"></span>${colorName(matchColor)}` : 'Add Pieces'}</h2>
       <div class="chips" data-c></div><div class="picker-grid" data-g></div></div>`);
     const ps = sheet(pc);
     const draw = () => {
@@ -1297,7 +1320,7 @@ function openEditor(outfit = null, startIds = []) {
       const g = $('[data-g]', pc); g.innerHTML = '';
       let list = state.items.filter((i) => cat === 'all' || i.cat === cat);
       if (matchColor) list = list.map((i) => [i, Math.max(0, ...(i.colors || []).map((x) => closeness(x, matchColor)))]).filter(([, s]) => s > 0.55).sort((a, b) => b[1] - a[1]).map(([i]) => i);
-      if (!list.length) g.append(h(`<p style="grid-column:1/-1;color:var(--ink-3);text-align:center;padding:30px 0">${state.items.length ? 'nothing here' : 'your closet is empty — add pieces first'}</p>`));
+      if (!list.length) g.append(h(`<p style="grid-column:1/-1;color:var(--ink-3);text-align:center;padding:30px 0">${state.items.length ? 'No pieces' : 'Your closet is empty'}</p>`));
       list.forEach((it, idx) => {
         const inLook = o.pieces.some((p) => p.itemId === it.id);
         const b = h(`<button class="pick-item ${inLook ? 'in' : ''}" style="animation:pieceIn .5s ${idx * 25}ms both cubic-bezier(.22,1,.36,1)"><img src="${it.sticker}" alt="" /><span class="on">${svg('check')}</span></button>`);
@@ -1309,7 +1332,7 @@ function openEditor(outfit = null, startIds = []) {
           },
           long: (e) => contextMenu(b, it.name, [
             { icon: 'plus', label: 'Add another', run: () => { addPiece(it.id); b.classList.add('in'); } },
-            { icon: 'palette', label: 'Find matching pieces', run: () => { ps.close(); setTimeout(() => openPicker(it.colors?.[0]), 300); } },
+            { icon: 'palette', label: 'Same colour', run: () => { ps.close(); setTimeout(() => openPicker(it.colors?.[0]), 300); } },
           ], e),
           hapticTap: 'select',
         });
@@ -1358,34 +1381,35 @@ function openTally() {
     const t = totals();
     const maxN = Math.max(1, ...CAT_ORDER.map((k) => t.by[k].n));
     const unpriced = t.n - t.priced;
-    const status = !t.n ? 'no pieces yet' : unpriced ? `${unpriced} to price` : 'all priced';
+    const status = !t.n ? 'No pieces' : unpriced ? `${unpriced} to price` : 'All priced';
     // how often each piece appears in a look
     const uses = new Map();
     state.outfits.forEach((o) => new Set(o.pieces.map((p) => p.itemId)).forEach((id) => uses.set(id, (uses.get(id) || 0) + 1)));
     const mostStyled = state.items.filter((i) => uses.get(i.id)).sort((x, y) => uses.get(y.id) - uses.get(x.id))[0];
     const unstyled = state.items.filter((i) => !uses.get(i.id)).length;
     const newest = [...state.items].sort((x, y) => y.created - x.created)[0];
-    c.innerHTML = `<h2>the tally</h2>
-      <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'} in your closet</small></div>
+    c.innerHTML = `<h2>Tally</h2>
+      <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'}</small></div>
       <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}, ${status}. Open the price list">
-        <span class="vp-l">closet value</span><span class="vp-v">${money(t.v)}</span>
+        <span class="vp-l">Value</span><span class="vp-v">${money(t.v)}</span>
         <span class="vp-s">${status}</span>${svg('back', 'class="vp-c"')}
       </button>
-      ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 80}ms;background:${['var(--sage)', 'var(--clay)', '#8fa8b0', '#b9a3c4'][i]}"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}
+      ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 80}ms"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}
       <div class="kv" style="margin-top:16px">
-        <div><small>looks</small><b>${state.outfits.length}</b></div>
-        <div><small>not yet styled</small><b>${unstyled} piece${unstyled === 1 ? '' : 's'}</b></div>
+        <div><small>Looks</small><b>${state.outfits.length}</b></div>
+        <div><small>Unstyled</small><b>${unstyled}</b></div>
       </div>
       <div class="kv">
-        <div><small>most styled</small><b>${mostStyled ? esc(mostStyled.name) : '—'}</b></div>
-        <div><small>newest piece</small><b>${newest ? esc(newest.name) : '—'}</b></div>
+        <div><small>Most styled</small><b>${mostStyled ? esc(mostStyled.name) : 'None'}</b></div>
+        <div><small>Newest</small><b>${newest ? esc(newest.name) : 'None'}</b></div>
       </div>`;
     // after pricing: refresh the numbers and hand focus back to the pill
     const prices = () => openPrices(() => { draw(); $('[data-a=prices]', c)?.focus({ preventScroll: true }); });
     press($('[data-a=prices]', c), { tap: prices, long: prices, hapticTap: 'select' });
   };
   draw();
-  sheet(c);
+  markTab('tally');
+  sheet(c, { onClose: () => markTab(state.view) });
 }
 
 /** The one place prices are listed and edited. Unpriced pieces come first. */
@@ -1398,9 +1422,8 @@ function openPrices(onClose) {
   const byNew = (x, y) => y.created - x.created;
   const todo = state.items.filter((i) => !isPriced(i)).sort(byNew);
   const done = state.items.filter(isPriced).sort(byNew);
-  const c = h(`<div class="prices"><h2>prices</h2>
-    <p class="sub">only you see these — type a price for any piece</p>
-    <div class="price-total"><span>total</span><b data-total></b><small data-count></small></div>
+  const c = h(`<div class="prices"><h2>Prices</h2>
+    <div class="price-total"><span>Total</span><b data-total></b><small data-count></small></div>
     <div data-list></div></div>`);
   const list = $('[data-list]', c);
   const syncTotal = () => {
@@ -1442,8 +1465,8 @@ function openPrices(onClose) {
     items.forEach((it) => {
       const row = h(`<div class="price-row">
         <img src="${it.sticker}" alt="" />
-        <div class="pr-text"><div class="pr-name">${esc(it.name)}</div><div class="pr-sub">${esc(CATS[it.cat]?.label || '')}${it.sub ? ' · ' + esc(it.sub) : ''}</div></div>
-        <label class="pr-input"><span>${esc(cur)}</span><input inputmode="decimal" enterkeyhint="next" autocomplete="off" maxlength="9" placeholder="—" aria-label="Price of ${esc(it.name)}" value="${isPriced(it) ? priceText(it.price) : ''}" /></label>
+        <div class="pr-text"><div class="pr-name">${esc(it.name)}</div><div class="pr-sub">${esc(it.sub || CATS[it.cat]?.label || '')}</div></div>
+        <label class="pr-input"><span>${esc(cur)}</span><input inputmode="decimal" enterkeyhint="next" autocomplete="off" maxlength="9" placeholder="0" aria-label="Price of ${esc(it.name)}" value="${isPriced(it) ? priceText(it.price) : ''}" /></label>
       </div>`);
       const inp = $('input', row);
       rows.push({ it, inp, row });
@@ -1457,7 +1480,7 @@ function openPrices(onClose) {
       inp.addEventListener('focus', () => {
         row.classList.add('focus');
         wasPriced = isPriced(it);
-        // Select the old value so typing replaces it — but only if this box still has focus (select()
+        // Select the old value so typing replaces it, but only if this box still has focus (select()
         // can steal focus, and two boxes would then fight over it) and nothing has been typed yet
         // (or a fast first digit would be selected and overwritten by the second).
         const v0 = inp.value;
@@ -1488,9 +1511,9 @@ function openPrices(onClose) {
       list.append(row);
     });
   };
-  if (!state.items.length) list.append(h('<p class="pr-empty">add a piece to your closet and it will show up here</p>'));
-  section('to price', todo);
-  section('priced', done);
+  if (!state.items.length) list.append(h('<p class="pr-empty">No pieces yet</p>'));
+  section('To price', todo);
+  section('Priced', done);
   syncTotal();
   sh = sheet(c, { onClose: () => {
     pricesOpen = false;
@@ -1503,11 +1526,11 @@ function openPrices(onClose) {
 }
 
 function openSettings() {
-  const c = h(`<div><h2>settings</h2><p class="sub">everything lives privately on this device</p>
-    <div class="toggle"><span>haptic feedback</span><button class="switch ${hapticsEnabled() ? 'on' : ''}" data-a="hap" aria-label="Haptics"></button></div>
-    <div class="field" style="margin-top:16px"><label>currency symbol</label><div class="wrap-chips" data-cur></div></div>
-    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="exp">${svg('download')} backup</button><button class="btn soft" data-a="imp">${svg('upload')} restore</button></div>
-    <button class="btn ghost block" data-a="wipe">${svg('trash')} clear everything</button></div>`);
+  const c = h(`<div><h2>Settings</h2>
+    <div class="toggle"><span>Haptics</span><button class="switch ${hapticsEnabled() ? 'on' : ''}" data-a="hap" aria-label="Haptics"></button></div>
+    <div class="field"><label>Currency</label><div class="wrap-chips" data-cur></div></div>
+    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="exp">Backup</button><button class="btn soft" data-a="imp">Restore</button></div>
+    <button class="btn ghost block" data-a="wipe">Clear everything</button></div>`);
   const s = sheet(c);
   const hb = $('[data-a=hap]', c);
   press(hb, { tap: () => { const on = !hb.classList.contains('on'); hb.classList.toggle('on', on); setHaptics(on); state.settings.haptics = on; saveSettings(); haptic('select'); }, hapticTap: null });
@@ -1520,9 +1543,9 @@ function openSettings() {
   press($('[data-a=imp]', c), { tap: () => { const f = $('#file-import'); f.value = ''; f.onchange = () => f.files[0] && importData(f.files[0]).then(() => s.close()); f.click(); } });
   press($('[data-a=wipe]', c), { tap: async () => {
     s.close();
-    if (!(await confirmSheet('Clear everything?', 'All pieces and looks will be deleted from this device. Make a backup first if unsure.', 'Clear all'))) return;
+    if (!(await confirmSheet('Clear everything?', 'All pieces and looks will be deleted.', 'Clear'))) return;
     await db.clear('items'); await db.clear('outfits');
-    state.items = []; state.outfits = []; render(); toast('a fresh start');
+    state.items = []; state.outfits = []; render(); toast('Cleared');
   } });
 }
 
@@ -1535,7 +1558,7 @@ async function exportData() {
   a.download = `my-closet-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  haptic('success'); toast('backup saved');
+  haptic('success'); toast('Backup saved');
 }
 async function importData(file) {
   try {
@@ -1543,8 +1566,8 @@ async function importData(file) {
     for (const it of data.items || []) await db.put('items', it);
     for (const o of data.outfits || []) await db.put('outfits', o);
     await load(); render();
-    haptic('success'); toast(`restored ${data.items?.length || 0} pieces`);
-  } catch { haptic('warning'); toast('that file could not be read'); }
+    haptic('success'); toast(`Restored ${data.items?.length || 0} pieces`);
+  } catch { haptic('warning'); toast('File could not be read'); }
 }
 
 /* ------------------------------------------------------------------ boot */
@@ -1560,8 +1583,8 @@ async function load() {
 function bindChrome() {
   $$('.tab[data-view]').forEach((t) => press(t, {
     tap: () => setView(t.dataset.view),
-    long: t.dataset.view === 'closet' ? (e) => contextMenu(t, 'closet', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => { state.filterCat = k; state.filterSub = null; if (state.view !== 'closet') setView('closet'); else renderCloset(); } })), e)
-      : (e) => contextMenu(t, 'looks', [
+    long: t.dataset.view === 'closet' ? (e) => contextMenu(t, 'Closet', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => { state.filterCat = k; state.filterSub = null; if (state.view !== 'closet') setView('closet'); else renderCloset(); } })), e)
+      : (e) => contextMenu(t, 'Looks', [
         { icon: 'plus', label: 'New look', run: () => openEditor() },
         { icon: 'sparkle', label: 'Surprise me', run: surpriseLook },
       ], e),
@@ -1571,8 +1594,8 @@ function bindChrome() {
   const fab = $('#fab');
   press(fab, {
     tap: () => (state.view === 'outfits' ? openEditor() : openAdd()),
-    long: (e) => contextMenu(fab, 'create', [
-      { icon: 'camera', label: 'Take a photo', run: () => quickPick('camera') },
+    long: (e) => contextMenu(fab, 'Add', [
+      { icon: 'camera', label: 'Take photo', run: () => quickPick('camera') },
       { icon: 'image', label: 'Choose photos', run: () => quickPick('library') },
       { icon: 'look', label: 'New look', run: () => openEditor() },
       { icon: 'sparkle', label: 'Surprise me', run: surpriseLook },
@@ -1600,10 +1623,12 @@ function quickPick(kind) {
 }
 
 (async function boot() {
-  greeting();
   bindChrome();
   await load();
   render();
+  moveTabInd();
+  window.addEventListener('resize', moveTabInd);
+  document.fonts?.ready?.then(moveTabInd);
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
 
