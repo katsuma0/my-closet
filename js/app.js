@@ -148,7 +148,7 @@ function sheet(content, { full = false, onClose } = {}) {
       el.style.transition = '';
       scrim.style.opacity = '';
       el.style.transform = ''; // spring back first: a sheet that asks before closing may stay open
-      if (dy > Math.min(150, el.offsetHeight * 0.3) || (dy > 24 && v > 0.5)) { haptic('light'); (api.dismiss || api.close)(); }
+      if (dy > Math.min(130, el.offsetHeight * 0.28) || (dy > 24 && v > 0.4)) { haptic('light'); (api.dismiss || api.close)(); }
     };
     const follow = (dy) => {
       el.style.transform = `translateY(${dy}px)`;
@@ -163,7 +163,7 @@ function sheet(content, { full = false, onClose } = {}) {
       // not from the strength slider, and not from the photo while it is being tapped to erase
       if (closed || e.touches.length !== 1 || e.target.closest('input[type=range], .slider-row, .stage.erasing')) return;
       const t = e.touches[0];
-      t0 = { x: t.clientX, y: t.clientY, on: false, d: 0, v: 0, lastY: t.clientY, lastT: performance.now(), t: performance.now() };
+      t0 = { x: t.clientX, y: t.clientY, on: false, d: 0, v: 0, lastY: t.clientY, lastT: performance.now(), t: performance.now(), ts0: e.timeStamp, ts1: e.timeStamp };
     }, { passive: true });
     el.addEventListener('touchmove', (e) => {
       if (!t0) return;
@@ -177,15 +177,20 @@ function sheet(content, { full = false, onClose } = {}) {
       }
       if (e.cancelable) e.preventDefault();
       t0.d = Math.max(0, t.clientY - t0.y);
+      t0.ts1 = e.timeStamp;
       const now = performance.now(), dt = now - t0.lastT;
       if (dt > 4) { t0.v = (t.clientY - t0.lastY) / dt; t0.lastY = t.clientY; t0.lastT = now; }
       follow(t0.d);
     }, { passive: false });
     const touchEnd = () => {
       if (!t0) return;
-      const { on, d, v, t } = t0; t0 = null;
+      const { on, d, v, t, ts0, ts1 } = t0; t0 = null;
+      if (!on) return;
+      // How long the finger really took: the events' own clock is the truth (it is not delayed by a
+      // busy page); the page clock is the fallback when events carry no usable time.
+      const took = ts1 > ts0 ? Math.min(ts1 - ts0, performance.now() - t) : performance.now() - t;
       // speed of the last stretch, or of the whole gesture when it was a short flick
-      if (on) settle(d, Math.max(v, d / Math.max(1, performance.now() - t)));
+      settle(d, Math.max(v, d / Math.max(1, took)));
     };
     el.addEventListener('touchend', touchEnd);
     el.addEventListener('touchcancel', touchEnd);
@@ -470,9 +475,9 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
   let mask = null, erasing = false, timer = null, run = 0;
   const el = h(`<div><div class="stage"><div class="busy"><div class="spinner"></div></div></div>
     <div class="stage-tools">
-      <button class="chip" data-a="bg"><span class="switch ${cut.removeBg ? 'on' : ''}" style="transform:scale(.7);margin:-6px -4px"></span>Remove background</button>
-      <button class="chip" data-a="erase">${svg('eraser')} Tap to erase</button>
-      <button class="chip" data-a="undo">${svg('undo')} Undo</button>
+      <button class="chip" data-a="bg"><span class="switch ${cut.removeBg ? 'on' : ''}" style="transform:scale(.7);margin:-6px -7px"></span>Remove background</button>
+      <button class="chip icon" data-a="erase" aria-label="Tap to erase" title="Tap to erase">${svg('eraser')}</button>
+      <button class="chip icon" data-a="undo" aria-label="Undo" title="Undo">${svg('undo')}</button>
     </div>
     <div class="slider-row" data-a="tol-row"><span>Gentle</span><input type="range" min="${TOL_MIN}" max="${TOL_MAX}" value="${Math.min(TOL_MAX, Math.max(TOL_MIN, cut.tolerance))}" aria-label="Background removal strength" /><span>Strong</span></div></div>`);
   host.innerHTML = '';
@@ -482,7 +487,7 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
 
   function syncTools() {
     eraseBtn.style.display = cut.removeBg ? '' : 'none';
-    $('[data-a=undo]', el).style.display = cut.removeBg ? '' : 'none';
+    $('[data-a=undo]', el).style.display = cut.removeBg && cut.seeds.length ? '' : 'none';
     $('[data-a=tol-row]', el).style.display = cut.removeBg ? '' : 'none';
     if (!cut.removeBg) { erasing = false; eraseBtn.classList.remove('active'); }
   }
@@ -494,6 +499,7 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
   }
   async function process() {
     if (!cut.raster) return;
+    syncTools(); // erase marks may have been added or removed
     const mine = ++run;
     stage.classList.add('loading');
     await pause(30); // let the spinner paint before the heavy work
@@ -518,7 +524,7 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     },
     long: () => { cut.seeds.length = 0; toast('Cleared'); process(); },
   });
-  press($('[data-a=undo]', el), { tap: () => { if (cut.seeds.length) { cut.seeds.pop(); process(); } else toast('Nothing to undo'); } });
+  press($('[data-a=undo]', el), { tap: () => { if (cut.seeds.length) { cut.seeds.pop(); process(); } } });
   let lastTick = cut.tolerance;
   range.addEventListener('input', () => {
     cut.tolerance = +range.value;
@@ -634,12 +640,12 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   }
 
   function renderStage() {
-    const re = h(`<button class="chip" data-a="re">${svg('image')} New photo</button>`);
+    const re = h(`<button class="chip icon" data-a="re" aria-label="New photo" title="New photo">${svg('image')}</button>`);
     press(re, { tap: () => pickFile('library'), long: (e) => contextMenu(re, 'New photo', [
       { icon: 'camera', label: 'Take photo', run: () => pickFile('camera') },
       { icon: 'image', label: 'Choose photo', run: () => pickFile('library') },
     ], e) });
-    editor = mountCutout(photo, st, { onChange: syncSwatches, extraTools: [re] });
+    editor = mountCutout(photo, st, { onChange: syncNameHint, extraTools: [re] });
     return editor;
   }
 
@@ -666,7 +672,6 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     }
     press($('[data-a=save]', d), { tap: save, hapticTap: null });
     renderSubs();
-    syncSwatches();
     setTimeout(() => details.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' }), 450);
   }
 
@@ -698,9 +703,6 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     const name = $('[data-name]', details);
     if (name) name.placeholder = autoName(st.result?.colors, st.cat, st.sub);
   }
-
-  // a new cut-out can change the piece's colours, and with them the suggested name
-  function syncSwatches() { syncNameHint(); }
 
   async function save() {
     await editor?.settle();
@@ -800,7 +802,6 @@ function openBatch(files, presetCat = null) {
     }
     e.el.classList.toggle('busy', e.status === 'busy');
     e.el.classList.toggle('ready', e.status === 'done');
-    e.el.classList.toggle('todo', !e.cat);
     $$('[data-cat]', e.el).forEach((b) => {
       b.classList.toggle('active', b.dataset.cat === e.cat);
       b.setAttribute('aria-pressed', String(b.dataset.cat === e.cat));
@@ -1012,7 +1013,7 @@ function openBatch(files, presetCat = null) {
 function outfitColors(o) {
   const out = [];
   for (const p of o.pieces) for (const c of mainColors(itemById(p.itemId))) {
-    if (out.length < 8 && out.every((x) => closeness(x, c) < 0.85)) out.push(c);
+    if (out.length < 6 && out.every((x) => closeness(x, c) < 0.85)) out.push(c);
   }
   return out;
 }
