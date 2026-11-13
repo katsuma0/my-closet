@@ -63,6 +63,20 @@ const money = (n) => {
   return state.settings.currency + s;
 };
 const itemById = (id) => state.items.find((i) => i.id === id);
+// keep digits and a single decimal separator (comma typed on some keyboards becomes a dot)
+const cleanPrice = (v) => {
+  const t = String(v).replace(/,/g, '.').replace(/[^0-9.]/g, '');
+  const i = t.indexOf('.');
+  return i < 0 ? t : t.slice(0, i + 1) + t.slice(i + 1).replace(/\./g, '').slice(0, 2);
+};
+// how a stored price reads inside an input: 68 → "68", 12.5 → "12.50"
+const priceText = (n) => (Number(n) % 1 === 0 ? String(Number(n)) : Number(n).toFixed(2));
+// '' / null → unpriced (null); otherwise a number rounded to cents
+const parsePrice = (v) => {
+  if (v === null || v === undefined || String(v).trim() === '') return null;
+  const n = parseFloat(cleanPrice(v));
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+};
 
 /* ------------------------------------------------------------------ press / long-press */
 
@@ -251,22 +265,29 @@ function render() {
 
 /* ------------------------------------------------------------------ closet view */
 
+// A piece is "priced" once it has any number on it (0 counts: gifts, hand-me-downs).
+const isPriced = (it) => it.price !== null && it.price !== undefined && it.price !== '' && Number.isFinite(Number(it.price));
+
 function totals() {
-  const by = Object.fromEntries(CAT_ORDER.map((c) => [c, { n: 0, v: 0 }]));
-  let v = 0;
-  for (const it of state.items) { const p = Number(it.price) || 0; v += p; if (by[it.cat]) { by[it.cat].n++; by[it.cat].v += p; } }
-  return { v, n: state.items.length, by };
+  const by = Object.fromEntries(CAT_ORDER.map((c) => [c, { n: 0 }]));
+  let v = 0, priced = 0;
+  for (const it of state.items) {
+    if (isPriced(it)) { v += Number(it.price); priced++; }
+    if (by[it.cat]) by[it.cat].n++;
+  }
+  return { v: Math.round(v * 100) / 100, n: state.items.length, priced, by };
 }
 
 function renderCloset() {
   const root = $('#view-closet');
   root.innerHTML = '';
   const t = totals();
-  const maxV = Math.max(1, ...CAT_ORDER.map((c) => t.by[c].v || t.by[c].n));
-  const tally = h(`<button class="tally">
-      <div><div class="label">closet value</div><div class="value">${money(t.v)}</div>
-      <div class="count">${t.n} piece${t.n === 1 ? '' : 's'}</div></div>
-      <div class="tally-bars">${CAT_ORDER.map((c) => `<i style="height:${8 + 36 * ((t.by[c].v || t.by[c].n) / maxV)}px"></i>`).join('')}</div>
+  const maxN = Math.max(1, ...CAT_ORDER.map((c) => t.by[c].n));
+  const nLooks = state.outfits.length;
+  const tally = h(`<button class="tally" aria-label="Open the tally">
+      <div><div class="label">in your closet</div><div class="value">${t.n} piece${t.n === 1 ? '' : 's'}</div>
+      <div class="count">${nLooks ? `${nLooks} look${nLooks === 1 ? '' : 's'} styled` : 'no looks yet'}</div></div>
+      <div class="tally-bars">${CAT_ORDER.map((c) => `<i style="height:${8 + 36 * (t.by[c].n / maxN)}px"></i>`).join('')}</div>
     </button>`);
   press(tally, { tap: openTally, long: openTally });
   root.append(tally);
@@ -325,7 +346,7 @@ function renderCloset() {
   items.forEach((it, idx) => {
     const card = h(`<button class="piece" style="animation-delay:${Math.min(idx, 12) * 35}ms">
       <img class="sticker" src="${it.sticker}" alt="${esc(it.name)}" loading="lazy" />
-      <div class="meta"><span class="name">${esc(it.name)}</span>${it.price ? `<span class="price">${money(it.price)}</span>` : ''}</div>
+      <div class="meta"><span class="name">${esc(it.name)}</span></div>
       <div class="dots">${(it.colors || []).map((c) => `<i style="background:${c}"></i>`).join('')}</div></button>`);
     press(card, { tap: () => openDetail(it), long: (e) => itemMenu(it, card, e) });
     grid.append(card);
@@ -367,8 +388,8 @@ function openDetail(it) {
     <h2>${esc(it.name)}</h2>
     <p class="sub">${esc(CATS[it.cat]?.label || '')}${it.sub ? ' · ' + esc(it.sub) : ''}</p>
     <div class="kv">
-      <div><small>price</small><b>${it.price ? money(it.price) : '—'}</b></div>
       <div><small>in looks</small><b>${outfitsWith.length}</b></div>
+      <div><small>added</small><b>${new Date(it.created).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</b></div>
     </div>
     <div class="field"><span class="field-label">colours</span><div class="swatches">${(it.colors || []).map((c) => `<button class="sw" data-c="${c}" style="background:${c}" aria-label="${colorName(c)}"></button>`).join('')}</div></div>
     <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="edit">${svg('edit')} Edit</button><button class="btn" data-a="look">${svg('look')} Style it</button></div>
@@ -536,7 +557,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       <div class="field"><label>category</label><div class="seg">${CAT_ORDER.map((k) => `<button data-cat="${k}" class="${st.cat === k ? 'active' : ''}">${svg(k)}${CATS[k].label}</button>`).join('')}</div></div>
       <div class="field"><label>type</label><div class="wrap-chips" data-subs></div></div>
       <div class="field"><label>name</label><input class="input" data-name placeholder="e.g. Linen shirt" value="${esc(st.name)}" maxlength="40" /></div>
-      <div class="field"><label>price <span style="text-transform:none;letter-spacing:0">(optional)</span></label><div class="price-wrap"><span>${esc(state.settings.currency)}</span><input class="input" data-price inputmode="decimal" placeholder="0" value="${st.price}" /></div></div>
+      ${item ? '' : `<div class="field"><label>price <span style="text-transform:none;letter-spacing:0">(optional — or add it later in the tally)</span></label><div class="price-wrap"><span>${esc(state.settings.currency)}</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
       <div class="field"><label>colours found</label><div class="swatches" data-sw></div></div>
       <button class="btn sage block" data-a="save">${svg('check')} ${item ? 'save changes' : 'add to closet'}</button>
     </div>`);
@@ -547,10 +568,11 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       renderSubs();
     }, hapticTap: 'select' }));
     const name = $('[data-name]', d); name.addEventListener('input', () => { st.name = name.value; });
-    const price = $('[data-price]', d); price.addEventListener('input', () => {
-      price.value = price.value.replace(/[^0-9.,]/g, '').replace(',', '.');
-      st.price = price.value;
-    });
+    const price = $('[data-price]', d);
+    if (price) {
+      price.value = st.price === null ? '' : st.price;
+      price.addEventListener('input', () => { price.value = cleanPrice(price.value); st.price = price.value; });
+    }
     press($('[data-a=save]', d), { tap: save, hapticTap: null });
     renderSubs();
     syncSwatches();
@@ -595,7 +617,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       created: item?.created || Date.now(),
       name: (st.name || '').trim() || autoName.charAt(0).toUpperCase() + autoName.slice(1),
       cat: st.cat, sub: st.sub,
-      price: st.price === '' ? null : Math.round(parseFloat(st.price) * 100) / 100 || 0,
+      price: parsePrice(st.price),
       sticker: st.result.dataURL,
       colors,
       original: st.original,
@@ -627,9 +649,6 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
 
 /* ------------------------------------------------------------------ outfits view */
 
-function outfitTotal(o) {
-  return o.pieces.reduce((sum, p) => sum + (Number(itemById(p.itemId)?.price) || 0), 0);
-}
 function outfitColors(o) {
   const out = [];
   for (const p of o.pieces) {
@@ -655,7 +674,7 @@ function renderOutfits() {
       <img class="thumb" src="${o.thumb || ''}" alt="" />
       <div class="strip">${cols.map((c) => `<i style="background:${c}"></i>`).join('')}</div>
       <div class="meta"><div class="name">${esc(o.name)}</div>
-      <div class="small"><span>${o.pieces.length} piece${o.pieces.length === 1 ? '' : 's'}</span><span>${money(outfitTotal(o))}</span></div></div></button>`);
+      <div class="small"><span>${o.pieces.length} piece${o.pieces.length === 1 ? '' : 's'}</span></div></div></button>`);
     press(card, { tap: () => openEditor(o), long: (e) => contextMenu(card, o.name, [
       { icon: 'edit', label: 'Open', run: () => openEditor(o) },
       { icon: 'copy', label: 'Duplicate', run: async () => {
@@ -717,7 +736,7 @@ function openEditor(outfit = null, startIds = []) {
       <button class="round dark" data-a="add" aria-label="Add pieces">${svg('plus')}</button>
       <button class="round" data-a="bg" aria-label="Board colour"><span data-bgdot style="width:22px;height:22px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--ink-3)"></span></button>
       <button class="round" data-a="shuffle" aria-label="Tidy layout">${svg('sparkle')}</button>
-      <div class="total"><small>look total</small><b data-total>${money(0)}</b></div>
+      <div class="total"><small>in this look</small><b data-total>0 pieces</b></div>
     </div>
     <div class="palette-tray">
       <div class="row"><span class="lbl">in look</span><div class="pill-strip" data-in></div></div>
@@ -768,7 +787,7 @@ function openEditor(outfit = null, startIds = []) {
   }
   function sync() {
     $('.hint', board).style.opacity = o.pieces.length ? 0 : 1;
-    $('[data-total]', c).textContent = money(outfitTotal(o));
+    $('[data-total]', c).textContent = `${o.pieces.length} piece${o.pieces.length === 1 ? '' : 's'}`;
     syncPalette();
   }
 
@@ -1116,21 +1135,142 @@ function copyHex(col) {
 /* ------------------------------------------------------------------ tally + settings */
 
 function openTally() {
-  const t = totals();
-  const maxV = Math.max(1, ...CAT_ORDER.map((c) => t.by[c].v));
-  const priced = state.items.filter((i) => i.price);
-  const priciest = [...priced].sort((a, b) => b.price - a.price)[0];
-  const avg = priced.length ? t.v / priced.length : 0;
-  const c = h(`<div class="breakdown"><h2>the tally</h2>
-    <div class="big-total"><div class="v">${money(t.v)}</div><small>${t.n} pieces · ${priced.length} priced</small></div>
-    ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].v / maxV) * 100}%;animation-delay:${i * 80}ms;background:${['var(--sage)', 'var(--clay)', '#8fa8b0', '#b9a3c4'][i]}"></i></span><span class="amt">${money(t.by[k].v)}</span></div>`).join('')}
-    <div class="kv" style="margin-top:16px">
-      <div><small>average piece</small><b>${money(Math.round(avg))}</b></div>
-      <div><small>most treasured</small><b>${priciest ? esc(priciest.name) : '—'}</b></div>
-    </div>
-    ${state.outfits.length ? `<div class="kv"><div><small>looks</small><b>${state.outfits.length}</b></div><div><small>avg look</small><b>${money(Math.round(state.outfits.reduce((s, o) => s + outfitTotal(o), 0) / state.outfits.length))}</b></div></div>` : ''}
-  </div>`);
+  const c = h('<div class="breakdown"></div>');
+  const draw = () => {
+    const t = totals();
+    const maxN = Math.max(1, ...CAT_ORDER.map((k) => t.by[k].n));
+    const unpriced = t.n - t.priced;
+    // how often each piece appears in a look
+    const uses = new Map();
+    state.outfits.forEach((o) => new Set(o.pieces.map((p) => p.itemId)).forEach((id) => uses.set(id, (uses.get(id) || 0) + 1)));
+    const mostStyled = state.items.filter((i) => uses.get(i.id)).sort((x, y) => uses.get(y.id) - uses.get(x.id))[0];
+    const unstyled = state.items.filter((i) => !uses.get(i.id)).length;
+    // signature colour = the most common main colour
+    const colourCount = new Map();
+    state.items.forEach((i) => { const col = i.colors?.[0]; if (col) { const nm = colorName(col); const e = colourCount.get(nm) || { n: 0, col }; e.n++; colourCount.set(nm, e); } });
+    const signature = [...colourCount.entries()].sort((x, y) => y[1].n - x[1].n)[0];
+    c.innerHTML = `<h2>the tally</h2>
+      <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'} in your closet</small></div>
+      <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}. Open the price list">
+        <span class="vp-l">closet value</span><span class="vp-v">${money(t.v)}</span>
+        <span class="vp-s">${!t.n ? 'no pieces yet' : unpriced ? `${unpriced} to price` : 'all priced'}</span>${svg('back', 'class="vp-c"')}
+      </button>
+      ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 80}ms;background:${['var(--sage)', 'var(--clay)', '#8fa8b0', '#b9a3c4'][i]}"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}
+      <div class="kv" style="margin-top:16px">
+        <div><small>looks</small><b>${state.outfits.length}</b></div>
+        <div><small>not yet styled</small><b>${unstyled} piece${unstyled === 1 ? '' : 's'}</b></div>
+      </div>
+      <div class="kv">
+        <div><small>most styled</small><b>${mostStyled ? esc(mostStyled.name) : '—'}</b></div>
+        <div><small>signature colour</small><b>${signature ? `<i class="dot" style="background:${signature[1].col}"></i>${signature[0]}` : '—'}</b></div>
+      </div>`;
+    press($('[data-a=prices]', c), { tap: () => openPrices(draw), long: () => openPrices(draw), hapticTap: 'select' });
+  };
+  draw();
   sheet(c);
+}
+
+/** The one place prices are listed and edited. Unpriced pieces come first. */
+function openPrices(onClose) {
+  const cur = state.settings.currency;
+  // order is fixed when the list opens so rows don't jump while typing
+  const byNew = (x, y) => y.created - x.created;
+  const todo = state.items.filter((i) => !isPriced(i)).sort(byNew);
+  const done = state.items.filter(isPriced).sort(byNew);
+  const c = h(`<div class="prices"><h2>prices</h2>
+    <p class="sub">only you see these — type a price for any piece</p>
+    <div class="price-total"><span>total</span><b data-total></b><small data-count></small></div>
+    <div data-list></div></div>`);
+  const list = $('[data-list]', c);
+  const syncTotal = () => {
+    const t = totals();
+    $('[data-total]', c).textContent = money(t.v);
+    $('[data-count]', c).textContent = `${t.priced} of ${t.n} priced`;
+  };
+  const pending = new Map(); // item id -> save timer
+  const rows = []; // { it, inp, row } in display order
+  const commit = async (it, inp) => {
+    clearTimeout(pending.get(it.id)); pending.delete(it.id);
+    const next = parsePrice(inp.value);
+    if (next === (isPriced(it) ? Number(it.price) : null)) return;
+    it.price = next;
+    await db.put('items', it);
+    syncTotal();
+  };
+  // Scroll the sheet so the focused row sits clear of the sticky total and the on-screen keyboard.
+  let sh = null;
+  const vv = window.visualViewport;
+  const reveal = (row, inp) => {
+    if (!sh || document.activeElement !== inp) return;
+    const r = row.getBoundingClientRect();
+    const top = vv ? vv.offsetTop : 0, height = vv ? vv.height : window.innerHeight;
+    const head = $('.price-total', c).getBoundingClientRect().bottom;
+    if (r.bottom > top + height - 16 || r.top < head + 8) {
+      sh.el.scrollBy({ top: r.top + r.height / 2 - (top + height * 0.42), behavior: 'smooth' });
+    }
+  };
+  const onViewport = () => { const r = rows.find((x) => x.inp === document.activeElement); if (r) reveal(r.row, r.inp); };
+  vv?.addEventListener('resize', onViewport);
+  const section = (title, items) => {
+    if (!items.length) return;
+    list.append(h(`<div class="price-head">${title} <span>${items.length}</span></div>`));
+    items.forEach((it) => {
+      const row = h(`<div class="price-row">
+        <img src="${it.sticker}" alt="" />
+        <div class="pr-text"><div class="pr-name">${esc(it.name)}</div><div class="pr-sub">${esc(CATS[it.cat]?.label || '')}${it.sub ? ' · ' + esc(it.sub) : ''}</div></div>
+        <label class="pr-input"><span>${esc(cur)}</span><input inputmode="decimal" enterkeyhint="next" autocomplete="off" placeholder="—" aria-label="Price of ${esc(it.name)}" value="${isPriced(it) ? priceText(it.price) : ''}" /></label>
+      </div>`);
+      const inp = $('input', row);
+      rows.push({ it, inp, row });
+      inp.addEventListener('input', () => {
+        inp.value = cleanPrice(inp.value);
+        clearTimeout(pending.get(it.id));
+        pending.set(it.id, setTimeout(() => commit(it, inp), 500));
+      });
+      inp.addEventListener('focus', () => {
+        row.classList.add('focus');
+        // select() focuses the input in some browsers, so only ever select the one that still has focus
+        // (otherwise two quick focus changes would steal focus back and forth forever)
+        setTimeout(() => { if (document.activeElement === inp) inp.select(); }, 0);
+        setTimeout(() => reveal(row, inp), 350);
+      });
+      inp.addEventListener('blur', async () => {
+        row.classList.remove('focus');
+        const before = isPriced(it);
+        await commit(it, inp);
+        // tidy the display ("12." → "12")
+        inp.value = isPriced(it) ? priceText(it.price) : '';
+        if (isPriced(it) !== before) haptic(isPriced(it) ? 'success' : 'light');
+      });
+      inp.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const nxt = rows[rows.findIndex((r) => r.inp === inp) + 1];
+        if (nxt) nxt.inp.focus(); else inp.blur();
+      });
+      // long-press the piece (not the input) for quick actions
+      press($('.pr-text', row), {
+        tap: () => inp.focus(),
+        long: (e) => contextMenu(null, it.name, [
+          { icon: 'edit', label: 'Set price', run: () => inp.focus() },
+          { icon: 'undo', label: 'Clear price', run: async () => { inp.value = ''; await commit(it, inp); } },
+        ], e),
+        hapticTap: 'select',
+      });
+      list.append(row);
+    });
+  };
+  if (!state.items.length) list.append(h('<p class="pr-empty">add a piece to your closet and it will show up here</p>'));
+  section('to price', todo);
+  section('priced', done);
+  syncTotal();
+  sh = sheet(c, { onClose: () => {
+    vv?.removeEventListener('resize', onViewport);
+    // save whatever was typed last, even if its box still has focus or its debounce hasn't fired
+    rows.forEach(({ it, inp }) => { commit(it, inp); });
+    if (list.contains(document.activeElement)) document.activeElement.blur();
+    onClose?.();
+  } });
 }
 
 function openSettings() {
@@ -1199,7 +1339,7 @@ function bindChrome() {
       : (e) => contextMenu(t, 'palette', INSPIRATION.slice(0, 5).map((p) => ({ icon: 'swatch', label: p.name, run: () => { state.paletteBase = p.colors[2]; if (state.view !== 'palette') setView('palette'); else renderPalette(); } })), e),
     hapticTap: 'select',
   }));
-  press($('#tally-tab'), { tap: openTally, long: openTally, hapticTap: 'select' });
+  press($('#tally-tab'), { tap: openTally, long: () => openPrices(), hapticTap: 'select' });
   const fab = $('#fab');
   press(fab, {
     tap: () => (state.view === 'outfits' ? openEditor() : openAdd()),

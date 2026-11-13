@@ -141,7 +141,6 @@ main { padding: 0 18px calc(120px + var(--safe-b)); }
 .piece:hover .sticker { transform: rotate(-1.5deg) scale(1.02); }
 .piece .meta { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; margin-top: 8px; padding: 0 4px; }
 .piece .name { font-size: 13px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.piece .price { font: 500 15px var(--serif); color: var(--ink-2); flex: none; }
 .piece .dots { display: flex; gap: 4px; padding: 6px 4px 0; }
 .dots i { width: 9px; height: 9px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.06); }
 
@@ -430,7 +429,48 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
 .breakdown .bar i { display: block; height: 100%; border-radius: 4px; background: var(--sage); transform-origin: left; animation: growX 1s var(--ease) both; }
 @keyframes growX { from { transform: scaleX(0); } }
 .breakdown .nm { width: 96px; font-size: 14px; }
-.breakdown .amt { width: 80px; text-align: right; font: 500 17px var(--serif); }
+.breakdown .amt { width: 34px; text-align: right; font: 500 17px var(--serif); }
+.kv b .dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; margin-right: 6px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
+
+/* the one small place the closet's cost appears */
+.value-pill {
+  display: flex; align-items: baseline; gap: 8px; width: fit-content; max-width: 100%; margin: 0 auto 14px;
+  padding: 9px 12px 9px 16px; border-radius: 999px; background: var(--card); box-shadow: var(--shadow-sm);
+}
+.value-pill .vp-l { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
+.value-pill .vp-v { font: 500 19px/1 var(--serif); }
+.value-pill .vp-s { font-size: 12px; color: var(--ink-2); white-space: nowrap; }
+.value-pill .vp-c { width: 14px; height: 14px; transform: rotate(180deg); align-self: center; color: var(--ink-3); flex: none; }
+
+/* price list */
+.price-total {
+  position: sticky; top: 4px; z-index: 1; display: flex; align-items: baseline; gap: 10px;
+  padding: 12px 16px; margin: 0 0 6px; border-radius: 18px; background: var(--card); box-shadow: var(--shadow-sm);
+}
+.price-total span { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
+.price-total b { font: 500 26px/1 var(--serif); }
+.price-total small { margin-left: auto; font-size: 12px; color: var(--ink-2); }
+.price-head { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); margin: 18px 4px 4px; }
+.price-head span { opacity: .6; margin-left: 4px; }
+.price-row { display: flex; align-items: center; gap: 12px; padding: 9px 4px; border-bottom: 1px solid var(--line); animation: pieceIn .5s var(--ease) both; }
+.price-row:last-child { border: 0; }
+.price-row img { width: 48px; height: 48px; object-fit: contain; flex: none; }
+.pr-text { flex: 1; min-width: 0; border-radius: 10px; }
+.pr-name { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pr-sub { font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pr-input {
+  flex: none; display: flex; align-items: center; gap: 3px; width: 108px; height: 44px; padding: 0 12px;
+  border-radius: 14px; background: var(--card); border: 1px solid var(--line);
+  transition: border-color .3s, box-shadow .3s;
+}
+.price-row.focus .pr-input { border-color: var(--sage); box-shadow: 0 0 0 4px color-mix(in srgb, var(--sage) 20%, transparent); }
+.pr-input span { color: var(--ink-3); font: 500 16px var(--serif); }
+.pr-input input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font: 500 18px var(--serif); text-align: right; padding: 0; }
+.pr-input input::placeholder { color: var(--ink-3); }
+.pr-empty { color: var(--ink-3); text-align: center; padding: 30px 0; }
+/* touch devices: room to scroll the last rows above the on-screen keyboard
+   (always there, so nothing jumps under your finger when a box takes focus) */
+@media (hover: none) and (pointer: coarse) { .prices [data-list] { padding-bottom: 42vh; } }
 .big-total { text-align: center; padding: 10px 0 18px; }
 .big-total .v { font: 500 52px/1 var(--serif); }
 .big-total small { color: var(--ink-3); font-size: 13px; }
