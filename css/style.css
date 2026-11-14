@@ -687,3 +687,6 @@ body.choosing #tabbar { transform: translate(-50%, 160%); opacity: 0; pointer-ev
 .zoom-fit svg { width: 15px; height: 15px; }
 .zoom-fit[hidden] { display: none; }
 @keyframes fit-in { from { opacity: 0; transform: scale(.8); } }
+
+/* very narrow phones: the fixer's two tools drop their icons so "Add back" fits beside Undo */
+@media (max-width: 359px) { .cut-more [data-a=erase] svg, .cut-more [data-a=add] svg { display: none; } }

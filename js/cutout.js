@@ -2939,7 +2939,7 @@ export function computeMask(img, tolerance = DEFAULT_TOLERANCE, seeds = []) {
       const s = y0 * w + x0, r = data[s * 4], g = data[s * 4 + 1], b = data[s * 4 + 2];
       const R = Math.round(Math.max(w, h) * 0.14), R2 = R * R, t = back ? tol * 0.8 : tol;
       seen.fill(0);
-      let qh = 0, qt = 0;
+      let qh = 0, qt = 0, clipped = false;
       if (back ? !mask[s] : true) { seen[s] = 1; queue[qt++] = s; }
       while (qh < qt) {
         const p = queue[qh++], x = p % w, pi = p * 4;
@@ -2947,15 +2947,21 @@ export function computeMask(img, tolerance = DEFAULT_TOLERANCE, seeds = []) {
           const q = k === 0 ? p - 1 : k === 1 ? p + 1 : k === 2 ? p - w : p + w;
           if (k === 0 ? x === 0 : k === 1 ? x === w - 1 : (q < 0 || q >= n)) continue;
           if (seen[q]) continue;
+          let far = false;
           if (back) {
             if (mask[q]) continue;
             const qx = q % w, qy = (q - qx) / w;
-            if ((qx - x0) * (qx - x0) + (qy - y0) * (qy - y0) > R2) continue;
+            far = (qx - x0) * (qx - x0) + (qy - y0) * (qy - y0) > R2;
           }
           const dGlobal = dist(data, q * 4, r, g, b);
-          if (dGlobal < t || (dGlobal < t * 1.6 && dist(data, q * 4, data[pi], data[pi + 1], data[pi + 2]) < t * 0.18)) { seen[q] = 1; queue[qt++] = q; }
+          if (dGlobal < t || (dGlobal < t * 1.6 && dist(data, q * 4, data[pi], data[pi + 1], data[pi + 2]) < t * 0.18)) {
+            if (far) { clipped = true; continue; }
+            seen[q] = 1; queue[qt++] = q;
+          }
         }
       }
+      // an add-back colour that runs on past the tap's reach is the open backdrop, not a part that was cut away
+      if (back && clipped) continue;
       for (let i = 0; i < qt; i++) { const p = queue[i]; mask[p] = back ? 1 : 0; added[p] = back ? 1 : 0; }
       if (!back) any = true;
     }
@@ -3007,8 +3013,12 @@ function shaveEdge(m, W, H, s) {
   const core = new Uint8Array(W * H);
   for (let p = 0; p < core.length; p++) core[p] = dIn[p] > T ? 1 : 0;
   const nearCore = distanceOutside(core, W, H);
+  // where a thin part meets the body, the body's edge is left alone too, so the two stay joined
+  const thin = new Uint8Array(W * H);
+  for (let p = 0; p < thin.length; p++) thin[p] = m[p] && nearCore[p] > T + 1.5 ? 1 : 0;
+  const nearThin = distanceOutside(thin, W, H);
   const out = new Uint8Array(W * H);
-  for (let p = 0; p < out.length; p++) if (m[p]) out[p] = dIn[p] <= s && nearCore[p] <= T + 1.5 ? 0 : 1;
+  for (let p = 0; p < out.length; p++) if (m[p]) out[p] = dIn[p] <= s && nearCore[p] <= T + 1.5 && nearThin[p] > s + 1.5 ? 0 : 1;
   return out;
 }
 

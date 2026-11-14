@@ -549,8 +549,9 @@ function sheet(content, { full = false, onClose } = {}) {
 const nativeChrome = () => window.webkit?.messageHandlers?.chrome;
 const TAB_OF = { closet: 'closet', mix: 'mix', outfits: 'looks', more: 'more' };
 function postChrome() {
-  try { nativeChrome()?.postMessage({ type: 'state', tab: TAB_OF[state.view] || 'closet', bar: !(stack.length || menuOpen || sel.on) }); } catch { /* not in the app */ }
+  try { nativeChrome()?.postMessage({ type: 'state', tab: TAB_OF[state.view] || 'closet', bar: !(stack.length || menuOpen || menuActing || sel.on) }); } catch { /* not in the app */ }
   document.body.classList.toggle('choosing', sel.on);
+  $('#tabbar').inert = sel.on; // out of sight while choosing: out of reach too
 }
 function syncTabbar() {
   postChrome();
@@ -561,6 +562,7 @@ function syncTabbar() {
 }
 
 let menuOpen = false;
+let menuActing = false; // a menu choice is about to run: the native bar waits for it rather than popping up
 function contextMenu(anchor, title, actions, point) {
   if (menuOpen) return; // one menu at a time
   menuOpen = true;
@@ -585,7 +587,12 @@ function contextMenu(anchor, title, actions, point) {
   for (const a of actions) {
     const b = h(`<button role="menuitem" class="${a.danger ? 'danger' : ''}">${svg(a.icon)}<span>${esc(a.label)}</span></button>`);
     // a second tap while the menu fades must not run the action again
-    b.addEventListener('click', () => { if (done) return; done = true; haptic(a.danger ? 'warning' : 'select'); close(); setTimeout(() => a.run(), 120); });
+    b.addEventListener('click', () => {
+      if (done) return; done = true;
+      haptic(a.danger ? 'warning' : 'select');
+      menuActing = true; close();
+      setTimeout(() => { try { a.run(); } finally { menuActing = false; postChrome(); } }, 120);
+    });
     menu.append(b);
   }
   layer.append(scrim);
@@ -943,13 +950,17 @@ function toolbar(k, label, redraw, families) {
 /** The sort and filter sheet. Changes apply at once; `onChange` repaints the page behind. */
 function openFilters(k, families, onChange) {
   const v = view[k];
+  // brands on the items there are now, plus any still switched on (so they can be switched off)
+  const onItems = (b) => state.items.some((i) => i.brand && i.brand.toLowerCase() === b.toLowerCase());
+  const fb = brandList().filter(onItems);
+  v.brands.forEach((b) => { if (!fb.some((x) => x.toLowerCase() === b.toLowerCase())) fb.push(b); });
   const c = h(`<div class="filters"><h2>Sort and filter</h2>
     <div class="field"><label id="flt-sort">Sort by</label><div class="wrap-chips" role="group" aria-labelledby="flt-sort" data-sort>
       ${SORTS[k].map(([val, l]) => `<button class="chip small" data-v="${val}">${l}</button>`).join('')}</div></div>
     ${families.length > 1 ? `<div class="field"><label id="flt-col">Colour</label><div class="wrap-chips" role="group" aria-labelledby="flt-col" data-col>
       ${families.map((f) => `<button class="chip small col" data-v="${f}"><i style="background:${FAMILIES[FAMILY_AT[f]][1]}"></i>${f}</button>`).join('')}</div></div>` : ''}
-    ${k === 'closet' && brandList().length ? `<div class="field"><label id="flt-brand">Brand</label><div class="wrap-chips" role="group" aria-labelledby="flt-brand" data-brands>
-      ${brandList().map((b) => `<button class="chip small" data-v="${esc(b)}">${esc(b)}</button>`).join('')}</div></div>` : ''}
+    ${k === 'closet' && fb.length ? `<div class="field"><label id="flt-brand">Brand</label><div class="wrap-chips" role="group" aria-labelledby="flt-brand" data-brands>
+      ${fb.map((b) => `<button class="chip small" data-v="${esc(b)}">${esc(b)}</button>`).join('')}</div></div>` : ''}
     <div class="field"><label id="flt-worn">Worn</label><div class="wrap-chips" role="group" aria-labelledby="flt-worn" data-worn>
       ${WORN.map(([val, l]) => `<button class="chip small" data-v="${val}">${l}</button>`).join('')}</div></div>
     <div class="row-btns"><button class="btn soft" data-a="reset">Reset</button><button class="btn" data-a="done">Done</button></div>
@@ -976,15 +987,26 @@ function openFilters(k, families, onChange) {
 
 /* ---------- choosing several items at once ---------- */
 const sel = { on: false, ids: new Set() };
+// The closet is drawn again when choosing starts or ends. Focus that was on a card, the bar or a menu goes
+// back to that card (or to the header's Select/Done), not to the top of the page.
+function redrawSelect(focusId = null) {
+  const a = document.activeElement;
+  const id = focusId || a?.closest?.('#view-closet [data-id]')?.dataset.id;
+  const lost = !a || a === document.body || !!a.closest?.('#view-closet, #select-bar, .ctx');
+  if (!sel.on) $('#select-bar')?.remove();
+  syncSelectTitle(); renderCloset(); postChrome();
+  if (!lost) return;
+  const card = id && $(`#view-closet [data-id="${CSS.escape(id)}"] .piece-open`);
+  (card || $('#select-btn'))?.focus({ preventScroll: true });
+}
 function startSelect(firstId = null) {
   sel.on = true; sel.ids = new Set(firstId ? [firstId] : []);
   haptic('medium');
-  syncSelectTitle(); renderCloset(); postChrome();
+  redrawSelect(firstId);
 }
 function endSelect() {
   sel.on = false; sel.ids.clear();
-  $('#select-bar')?.remove();
-  syncSelectTitle(); renderCloset(); postChrome();
+  redrawSelect();
 }
 /** The bar at the bottom while choosing: how many, and what can be done to them all. */
 function selectBar() {
@@ -996,7 +1018,7 @@ function selectBar() {
       <button data-a="s-wash">${svg('drop')}<span>Wash</span></button>
       <button data-a="s-del" class="danger">${svg('trash')}<span>Delete</span></button>
     </div>`);
-    document.body.append(bar);
+    $('#app').append(bar); // inside #app: unreachable while a sheet or menu is open, like the rest of the page
     const chosen = () => state.items.filter((i) => sel.ids.has(i.id));
     const need = (f) => () => { if (!sel.ids.size) { haptic('light'); toast('Choose items first'); return; } f(chosen()); };
     press($('[data-a=s-edit]', bar), { tap: need((list) => bulkEdit(list)) });
@@ -1007,9 +1029,18 @@ function selectBar() {
     }) });
     press($('[data-a=s-wash]', bar), { tap: need(async (list) => { const on = !list.every(inWash); await setWash(list, on); toast(on ? 'In the wash' : 'Clean again'); }) });
     press($('[data-a=s-del]', bar), { tap: need(async (list) => {
-      if (!(await confirmSheet(`Delete ${list.length} item${list.length === 1 ? '' : 's'}?`, ''))) return;
-      for (const it of list) await deleteItem(it, true);
-      endSelect(); toast('Deleted');
+      // say which looks are touched, and which go altogether, as deleting one item does
+      const ids = new Set(list.map((i) => i.id));
+      const used = state.outfits.filter((o) => o.pieces.some((p) => ids.has(p.itemId)));
+      const gone = used.filter((o) => o.pieces.every((p) => ids.has(p.itemId))).length;
+      const note = !used.length ? '' : `They are in ${used.length} look${used.length === 1 ? '' : 's'}.` + (gone ? ` ${gone === used.length && gone === 1 ? 'That look' : `${gone} look${gone === 1 ? '' : 's'}`} will be deleted too.` : '');
+      if (!(await confirmSheet(`Delete ${list.length} item${list.length === 1 ? '' : 's'}?`, note))) return;
+      // choosing ends first and the items leave the page at once, so nothing else can act on them meanwhile
+      endSelect();
+      state.items = state.items.filter((i) => !ids.has(i.id));
+      render();
+      for (const it of list) await deleteItem(it, true, true);
+      render(); toast('Deleted');
     }) });
   }
   bar.classList.toggle('none', !sel.ids.size);
@@ -1027,14 +1058,14 @@ function bulkEdit(list) {
   const s = sheet(c);
   // the category every chosen item already shares, if any
   const same = list.every((i) => i.cat === list[0].cat) ? list[0].cat : null;
-  const paintCats = () => $$('[data-cat]', c).forEach((b) => b.classList.toggle('active', b.dataset.cat === (ch.cat || same)));
+  const paintCats = () => $$('[data-cat]', c).forEach((b) => { const on = b.dataset.cat === (ch.cat || same); b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
   const paintSubs = () => {
     const cat = ch.cat || same, f = $('[data-typef]', c), w = $('[data-subs]', c);
     f.hidden = !cat; w.innerHTML = '';
     if (!cat) return;
     const custom = state.items.filter((i) => i.cat === cat && i.sub && !CATS[cat].subs.includes(i.sub)).map((i) => i.sub);
     [...new Set([...CATS[cat].subs, ...custom])].forEach((sname) => {
-      const b = h(`<button class="chip small ${ch.sub === sname ? 'active' : ''}">${esc(sname)}</button>`);
+      const b = h(`<button class="chip small ${ch.sub === sname ? 'active' : ''}" aria-pressed="${ch.sub === sname}">${esc(sname)}</button>`);
       press(b, { tap: () => { ch.sub = ch.sub === sname ? undefined : sname; paintSubs(); }, hapticTap: 'select' });
       w.append(b);
     });
@@ -1044,6 +1075,7 @@ function bulkEdit(list) {
   paintCats(); paintSubs();
   press($('[data-a=apply]', c), { tap: async () => {
     for (const it of list) {
+      if (!state.items.includes(it)) continue; // deleted while this sheet was open
       const auto = it.name === autoName(it.colors, it.cat, it.sub); // a name the app made follows the new type
       if (ch.cat && ch.cat !== it.cat) { it.cat = ch.cat; it.sub = null; }
       if (ch.sub !== undefined) it.sub = ch.sub;
@@ -1096,15 +1128,20 @@ function brandField(get, set, { keepOption = false } = {}) {
     sel.value = cur === undefined ? '__keep' : (list.find((b) => b.toLowerCase() === (cur || '').toLowerCase()) || '');
   };
   fill();
+  const canon = (typed) => brandList().find((b) => b.toLowerCase() === typed.toLowerCase()) || typed; // "zara" is "Zara"
+  let prev; // the choice before "Add a brand…", kept while the box is empty
   sel.addEventListener('change', () => {
-    if (sel.value === '__new') { box.hidden = false; inp.value = ''; setTimeout(() => inp.focus(), 30); return; }
+    if (sel.value === '__new') { prev = get(); box.hidden = false; inp.value = ''; setTimeout(() => inp.focus(), 30); return; }
     box.hidden = true;
     set(sel.value === '__keep' ? undefined : sel.value);
     haptic('select');
   });
+  // what is typed already counts (Save before Add keeps it, and leaving asks first)
+  inp.addEventListener('input', () => { const v = inp.value.trim(); set(v ? canon(v) : prev); });
   const add = () => {
-    const v = inp.value.trim();
-    if (!v) { inp.focus(); return; }
+    const typed = inp.value.trim();
+    if (!typed) { inp.focus(); return; }
+    const v = canon(typed);
     rememberBrand(v); set(v); box.hidden = true; fill(); haptic('success');
   };
   press($('button', box), { tap: add, hapticTap: null });
@@ -1146,7 +1183,7 @@ async function duplicateItem(it) {
   render();
 }
 
-async function deleteItem(it, asked = false) {
+async function deleteItem(it, asked = false, quiet = false) {
   const used = state.outfits.filter((o) => o.pieces.some((p) => p.itemId === it.id));
   if (!asked && !(await confirmSheet('Delete this item?', used.length ? `${it.name}. It is in ${used.length} look${used.length === 1 ? '' : 's'}.` : it.name))) return;
   await db.del('items', it.id);
@@ -1161,7 +1198,7 @@ async function deleteItem(it, asked = false) {
       await db.put('outfits', o);
     } catch { /* the look keeps its old picture */ }
   }
-  toast('Deleted'); render();
+  if (!quiet) { toast('Deleted'); render(); }
 }
 
 /* ------------------------------------------------------------------ item detail */
@@ -1249,7 +1286,7 @@ function eraseTarget(mask, w, h, nx, ny, reach) {
  */
 function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
   let mask = null, mode = null, timer = null, run = 0; // mode: 'erase' | 'add' while tapping the photo
-  const el = h(`<div><div class="stage"><div class="busy"><div class="spinner"></div></div><span class="stage-hint">Tap what should go</span><button class="zoom-fit" aria-label="Zoom out" hidden>${svg('zoom')}<span>Fit</span></button></div>
+  const el = h(`<div><div class="stage"><div class="busy"><div class="spinner"></div></div><span class="stage-hint">Tap what should go</span><button class="zoom-fit" hidden>${svg('zoom')}<span>Fit</span></button></div>
     <div class="cut-tools">
       <button class="chip" data-a="bg" role="switch" aria-checked="${!!cut.removeBg}"><span class="switch ${cut.removeBg ? 'on' : ''}" style="transform:scale(.7);margin:-6px -7px"></span>Remove background</button>
     </div>
@@ -1274,6 +1311,8 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
       b.classList.toggle('active', mode === m);
       b.setAttribute('aria-pressed', String(mode === m));
       $('span', b).textContent = mode === m ? 'Done' : label;
+      // "Done" alone does not say which tool is on
+      if (mode === m) b.setAttribute('aria-label', m === 'erase' ? 'Done removing' : 'Done adding back'); else b.removeAttribute('aria-label');
     });
     $('.stage-hint', el).textContent = mode === 'add' ? 'Tap what should come back' : 'Tap what should go';
   }
@@ -1284,6 +1323,9 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     const c = view();
     if (!c) return;
     const cw = c.offsetWidth, ch = c.offsetHeight;
+    // the photo was resized (an iPad turned, Split View): the same spot stays in view
+    if (zv.w && cw && ch && (cw !== zv.w || ch !== zv.h)) { zv.x *= cw / zv.w; zv.y *= ch / zv.h; }
+    zv.w = cw; zv.h = ch;
     zv.z = Math.max(1, Math.min(6, zv.z));
     zv.x = Math.min(0, Math.max(cw * (1 - zv.z), zv.x));
     zv.y = Math.min(0, Math.max(ch * (1 - zv.z), zv.y));
@@ -1381,9 +1423,7 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     gest.from = c ? { z: zv.z, x: zv.x, y: zv.y, r: c.getBoundingClientRect() } : null;
     if (pts.size >= 2) { const m = mid(); gest.m0 = m; gest.d0 = Math.max(1, m.d); } else { const [a] = [...pts.values()]; gest.m0 = { x: a.x, y: a.y }; }
   };
-  let lastKind = 'mouse';
   stage.addEventListener('pointerdown', (e) => {
-    lastKind = e.pointerType;
     if (!mode || e.target.closest('.zoom-fit') || (e.pointerType === 'mouse' && e.button !== 0)) return;
     try { stage.setPointerCapture(e.pointerId); } catch { /* gone */ }
     pts.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY });
@@ -1420,8 +1460,9 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     e.preventDefault();
     zoomAt(zv.z * Math.exp(-e.deltaY * 0.004), e.clientX, e.clientY);
   }, { passive: false });
-  // a double tap would mark the photo twice; double-click with a mouse zooms instead
-  stage.addEventListener('dblclick', (e) => { if (mode && lastKind === 'mouse') { if (zv.z > 1.01) resetZoom(); else zoomAt(2.5, e.clientX, e.clientY); } });
+  // the screen turned or the window changed size while zoomed in: keep the photo in view
+  const onResize = () => { if (!stage.isConnected) window.removeEventListener('resize', onResize); else if (mode) applyZoom(); };
+  window.addEventListener('resize', onResize);
   syncTools();
   show();
   return {
@@ -1982,7 +2023,7 @@ function renderMix(focusRow = null) {
     if (r.id === undefined) {
       // tops, bottoms and shoes start on a piece; outerwear and accessories start empty; a layer starts on a piece the other rows do not show
       const free = items.find((i) => !taken(r).has(i.id));
-      r.id = r.extra ? (free ? free.id : null) : r.cat === 'acc' || r.cat === 'outer' ? null : items[0].id;
+      r.id = r.extra ? (free ? free.id : null) : r.cat === 'acc' || r.cat === 'outer' ? null : (free || items[0]).id;
     }
     const slots = [null, ...items];
     const row = h(`<div class="mix-row"><div class="mix-track" role="listbox" tabindex="0" aria-label="${r.extra ? 'Another ' + ONE[r.cat].toLowerCase() : CATS[r.cat].label}"></div></div>`);
@@ -2079,7 +2120,9 @@ function openMixRows() {
   const count = (k) => state.items.filter((i) => i.cat === k).length;
   // every change shows at once on the Mix page underneath
   const changed = () => { saveMixCats(); if (state.view === 'mix') renderMix(); };
-  const draw = (focus = null, enter = null) => {
+  let settling = 0; // a dropped row is landing; the list is about to be drawn again
+  // focus goes to the moved row's handle, or (for a row just added or changed) to its kind button
+  const draw = (focus = null, enter = null, toKind = focus !== null && focus === enter) => {
     list.innerHTML = '';
     const n = mix.rows.length;
     mix.rows.forEach((r, i) => {
@@ -2091,14 +2134,15 @@ function openMixRows() {
       const grip = $('.grip', li), rk = $('.rk', li), rm = $('.rm', li);
       press(rk, { tap: () => contextMenu(rk, 'Show', CAT_ORDER.map((cat) => ({ icon: cat, label: CATS[cat].label, run: () => {
         if (r.cat === cat) return;
-        r.cat = cat; r.id = undefined; changed(); draw(r);
+        r.cat = cat; r.id = undefined; changed(); draw(r, null, true);
       } })), null), hapticTap: null });
       press(rm, { tap: () => {
-        if (mix.rows.length < 2 || li.classList.contains('out')) return; // a second tap while it slides away does nothing
+        // one row always stays, counting rows already sliding away; a second tap on this one does nothing
+        if (li.classList.contains('out') || mix.rows.length - list.querySelectorAll('.rows-item.out').length < 2) return;
         li.classList.add('out');
         setTimeout(() => {
           const at = mix.rows.indexOf(r);
-          if (at < 0) return;
+          if (at < 0 || mix.rows.length < 2) { li.classList.remove('out'); return; }
           mix.rows.splice(at, 1); changed(); draw(mix.rows[Math.min(at, mix.rows.length - 1)]);
         }, 200);
       } });
@@ -2111,7 +2155,7 @@ function openMixRows() {
       });
       dragRow(grip, li, i);
       list.append(li);
-      if (r === focus) setTimeout(() => (focus === enter ? rk : grip).focus({ preventScroll: true }), 0);
+      if (r === focus) setTimeout(() => (toKind ? rk : grip).focus({ preventScroll: true }), 0);
     });
     add.classList.toggle('off', n >= MIX_MAX);
     add.setAttribute('aria-disabled', String(n >= MIX_MAX));
@@ -2120,7 +2164,7 @@ function openMixRows() {
   function dragRow(grip, li, from) {
     let d = null;
     grip.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0 || d) return;
+      if (e.button !== 0 || d || settling) return;
       e.preventDefault(); e.stopPropagation();
       try { grip.setPointerCapture(e.pointerId); } catch { /* gone already */ }
       const els = [...list.children], gap = els.length > 1 ? els[1].offsetTop - els[0].offsetTop : li.offsetHeight;
@@ -2147,7 +2191,8 @@ function openMixRows() {
       const { to, gap } = d; d = null;
       li.classList.remove('dragging');
       li.style.transform = `translateY(${(to - from) * gap}px)`; // lands in its new place, then the list is drawn in order
-      setTimeout(() => {
+      settling = setTimeout(() => {
+        settling = 0;
         list.classList.remove('moving');
         const r = mix.rows[from];
         if (to !== from) { mix.rows.splice(to, 0, ...mix.rows.splice(from, 1)); changed(); haptic('light'); }
@@ -2160,6 +2205,7 @@ function openMixRows() {
   press(add, { tap: () => {
     if (mix.rows.length >= MIX_MAX) { haptic('warning'); toast(`Up to ${MIX_MAX} rows`); return; }
     contextMenu(add, 'Add a row', CAT_ORDER.map((cat) => ({ icon: cat, label: CATS[cat].label, run: () => {
+      if (mix.rows.length >= MIX_MAX) { haptic('warning'); toast(`Up to ${MIX_MAX} rows`); return; } // a second menu opened meanwhile
       const r = { cat, id: undefined };
       mix.rows.push(r); changed(); draw(r, r);
     } })), null);
@@ -2263,10 +2309,11 @@ function lookMenu(o, card, e) {
  * taken back exactly. `keep` false leaves the look itself unsaved (a new look being made); `t` puts back a
  * wear that was taken away.
  */
-async function wearLook(o, keep = true, t = Date.now()) {
+async function wearLook(o, keep = true, t = Date.now(), ids = null) {
   o.worn = [...(o.worn || []), t].sort((a, b) => a - b).slice(-400);
   if (keep) await db.put('outfits', o);
-  for (const id of new Set(o.pieces.map((p) => p.itemId))) {
+  // `ids`: the items to credit (the pieces on the board, or exactly those a wear was taken from)
+  for (const id of ids || new Set(o.pieces.map((p) => p.itemId))) {
     const it = itemById(id);
     if (!it) continue;
     it.worn = [...(it.worn || []), t].slice(-400);
@@ -2275,19 +2322,28 @@ async function wearLook(o, keep = true, t = Date.now()) {
   haptic('success');
   return t;
 }
-/** Takes back a wear of a look (the given one, or the latest), and the same wear of its pieces. */
+/**
+ * Takes back a wear of a look (the given one, or the latest), and the same wear from every item that has it,
+ * even one taken out of the look since. Returns { t, ids }: the wear, and the items it was taken from.
+ */
 async function unwearLook(o, t = lastWear(o), keep = true) {
-  if (!t || !(o.worn || []).includes(t)) return;
+  if (!t || !(o.worn || []).includes(t)) return null;
   o.worn = o.worn.filter((x) => x !== t);
   if (keep) await db.put('outfits', o);
-  for (const id of new Set(o.pieces.map((p) => p.itemId))) {
-    const it = itemById(id);
-    if (!it || !(it.worn || []).includes(t)) continue;
+  const ids = await dropItemWear(t);
+  haptic('light');
+  return { t, ids };
+}
+/** Removes the wear stamped `t` from every item that has it; returns their ids. */
+async function dropItemWear(t) {
+  const ids = [];
+  for (const it of state.items) {
+    if (!(it.worn || []).includes(t)) continue;
     it.worn = it.worn.filter((x) => x !== t);
+    ids.push(it.id);
     await db.put('items', it);
   }
-  haptic('light');
-  return t;
+  return ids;
 }
 
 function surpriseLook() {
@@ -2477,6 +2533,9 @@ function openEditor(outfit = null, startIds = []) {
 
     handle.addEventListener('pointerdown', (e) => {
       e.stopPropagation(); handle.setPointerCapture(e.pointerId);
+      el.style.transition = ''; // still springing from Arrange: follow at once
+      if (g) { clearTimeout(g.longTimer); g.moved = true; } // turning is not a long press
+      turning = true;
       const { W, H } = bsize(); const br = board.getBoundingClientRect();
       const cx = br.left + p.x * W, cy = br.top + p.y * H;
       const d0 = Math.hypot(e.clientX - cx, e.clientY - cy), a0 = Math.atan2(e.clientY - cy, e.clientX - cx);
@@ -2487,8 +2546,12 @@ function openEditor(outfit = null, startIds = []) {
         p.rot = snapRot(r0 + (a - a0) * 180 / Math.PI);
         place(p); dirty = true;
       };
-      const up = () => { handle.removeEventListener('pointermove', mv); handle.removeEventListener('pointerup', up); haptic('light'); };
-      handle.addEventListener('pointermove', mv); handle.addEventListener('pointerup', up);
+      const up = () => {
+        turning = false;
+        handle.removeEventListener('pointermove', mv); handle.removeEventListener('pointerup', up); handle.removeEventListener('pointercancel', up);
+        haptic('light');
+      };
+      handle.addEventListener('pointermove', mv); handle.addEventListener('pointerup', up); handle.addEventListener('pointercancel', up);
     });
 
     el.addEventListener('pointerdown', (e) => { e.stopPropagation(); fingerDown(e, p, el); });
@@ -2498,6 +2561,7 @@ function openEditor(outfit = null, startIds = []) {
   // ----- one gesture at a time: the first finger picks the item; every other finger, wherever it lands
   //       (on another item or on the board), joins in to pinch and turn that same item
   let g = null; // { p, el, pts: Map(pointerId -> {x, y}), start, moved, longTimer }
+  let turning = false; // a finger is on a rotate handle
   function baseline() {
     const pts = [...g.pts.values()], p = g.p;
     if (pts.length === 1) g.start = { x: p.x, y: p.y, px: pts[0].x, py: pts[0].y };
@@ -2509,9 +2573,10 @@ function openEditor(outfit = null, startIds = []) {
   function fingerDown(e, p, el) {
     try { board.setPointerCapture(e.pointerId); } catch { /* the pointer already left */ }
     if (!g) {
+      el.style.transition = ''; // an item still springing from Arrange follows the finger at once
       g = { p, el, pts: new Map(), start: null, moved: false, longTimer: 0 };
       if (selected !== p) { select(p); haptic('select'); }
-      g.longTimer = setTimeout(() => { if (g && !g.moved && g.pts.size === 1) { const gp = g; g = null; haptic('long'); pieceMenu(gp.p, gp.el, e); } }, 520);
+      g.longTimer = setTimeout(() => { if (g && !g.moved && !turning && g.pts.size === 1) { const gp = g; g = null; haptic('long'); pieceMenu(gp.p, gp.el, e); } }, 520);
     } else {
       clearTimeout(g.longTimer); // a second finger: a pinch, not a long press
       g.moved = true;
@@ -2527,8 +2592,8 @@ function openEditor(outfit = null, startIds = []) {
       const dx = pts[0].x - st.px, dy = pts[0].y - st.py;
       if (!g.moved && Math.hypot(dx, dy) > 6) { g.moved = true; clearTimeout(g.longTimer); }
       if (g.moved) {
-        p.x = Math.max(-0.1, Math.min(1.1, st.x + dx / W));
-        p.y = Math.max(-0.1, Math.min(1.1, st.y + dy / H));
+        p.x = Math.max(0, Math.min(1, st.x + dx / W)); // its centre stays on the board, where it can be grabbed again
+        p.y = Math.max(0, Math.min(1, st.y + dy / H));
         place(p); dirty = true;
       }
     } else {
@@ -2536,8 +2601,8 @@ function openEditor(outfit = null, startIds = []) {
       const d = Math.hypot(b.x - a.x, b.y - a.y), ang = Math.atan2(b.y - a.y, b.x - a.x);
       p.w = Math.max(0.08, Math.min(1.2, st.w * d / st.d));
       p.rot = snapRot(st.rot + (ang - st.ang) * 180 / Math.PI);
-      p.x = st.x + ((a.x + b.x) / 2 - st.mx) / W;
-      p.y = st.y + ((a.y + b.y) / 2 - st.my) / H;
+      p.x = Math.max(0, Math.min(1, st.x + ((a.x + b.x) / 2 - st.mx) / W));
+      p.y = Math.max(0, Math.min(1, st.y + ((a.y + b.y) / 2 - st.my) / H));
       place(p); dirty = true;
     }
   });
@@ -2686,7 +2751,7 @@ function openEditor(outfit = null, startIds = []) {
       if (!animate) { place(p); return; }
       const delay = Math.min(k * 45, 300);
       el.style.transition = `transform .75s cubic-bezier(.3,1.45,.5,1) ${delay}ms, width .75s cubic-bezier(.3,1.45,.5,1) ${delay}ms`;
-      el.classList.remove('hop'); void el.offsetWidth; el.classList.add('hop');
+      el.classList.remove('hop', 'pop'); void el.offsetWidth; el.classList.add('hop'); // 'pop' would replay the drop-in afterwards
       setTimeout(() => { el.style.transition = ''; el.classList.remove('hop'); }, 820 + delay);
       place(p);
       if (k < 6) setTimeout(() => haptic('light'), delay + 380);
@@ -2764,14 +2829,19 @@ function openEditor(outfit = null, startIds = []) {
   // ----- times worn: minus and plus, each with Undo
   const stored = () => state.outfits.find((x) => x.id === o.id);
   const wn = $('[data-wn]', c), minus = $('[data-a=w-minus]', c);
-  let wornChanged = false;
+  let wornChanged = false, edClosed = false;
   const paintWorn = () => { wn.textContent = String(wears(o)); minus.disabled = !wears(o); };
   paintWorn();
-  const sayWorn = (undo) => toast(`Worn ${wears(o)} time${wears(o) === 1 ? '' : 's'}`, { label: 'Undo', run: async () => { await undo(); paintWorn(); } });
-  // the look in storage takes the change when there is one; the open copy follows it so saving keeps it
-  async function wornStep(add, t) {
+  // Undo can still be tapped after the editor has closed: the Looks page then shows the count it brings back
+  const sayWorn = (undo) => toast(`Worn ${wears(o)} time${wears(o) === 1 ? '' : 's'}`, { label: 'Undo', run: async () => {
+    await undo(); paintWorn();
+    if (edClosed && state.view === 'outfits') renderOutfits();
+  } });
+  // the look in storage takes the change when there is one; the open copy follows it so saving keeps it.
+  // A wear goes to the items on the board now (not those the look held when it was last saved).
+  async function wornStep(add, t, ids = null) {
     const s0 = stored(), target = s0 || o;
-    const at = add ? await wearLook(target, !!s0, t) : await unwearLook(target, t, !!s0);
+    const at = add ? await wearLook(target, !!s0, t, ids || new Set(o.pieces.map((p) => p.itemId))) : await unwearLook(target, t, !!s0);
     if (s0) o.worn = [...(s0.worn || [])];
     wornChanged = true;
     paintWorn();
@@ -2783,11 +2853,18 @@ function openEditor(outfit = null, startIds = []) {
   }, hapticTap: null });
   press(minus, { tap: async () => {
     if (!wears(o)) return;
-    const t = await wornStep(false, lastWear(stored() || o));
-    if (t) sayWorn(() => wornStep(true, t));
+    const r = await wornStep(false, lastWear(stored() || o));
+    if (r) sayWorn(() => wornStep(true, r.t, r.ids)); // back to exactly the items it was taken from
   }, hapticTap: null });
 
-  const close0 = s.close; s.close = () => { window.removeEventListener('resize', onResize); close0(); if (wornChanged && state.view === 'outfits') renderOutfits(); };
+  const close0 = s.close; s.close = () => {
+    edClosed = true;
+    window.removeEventListener('resize', onResize);
+    // a new look that was never saved: the wears it gave its items go with it
+    if (!stored()) for (const t of o.worn || []) dropItemWear(t);
+    close0();
+    if (wornChanged && state.view === 'outfits') renderOutfits();
+  };
 }
 
 /** Height / width of the look board on this phone (measured whenever the editor opens; estimated before that). */
@@ -3024,8 +3101,10 @@ function settingsPanel() {
     const t = $('[data-a=tint]', c); t.classList.toggle('on', prefs.tint); t.setAttribute('aria-checked', String(prefs.tint));
   };
   // items are drawn with a different sticker edge on dark, so the pages are drawn again
-  $$('[data-theme-opt]', c).forEach((b) => press(b, { tap: () => { prefs.theme = b.dataset.themeOpt; applyPrefs(); sync(); }, hapticTap: 'select' }));
-  press($('[data-a=tint]', c), { tap: () => { prefs.tint = !prefs.tint; applyPrefs(); sync(); }, hapticTap: 'select' });
+  // applyPrefs draws the More page again: focus (and VoiceOver) stays on the control just used, in the new panel
+  const refocus = (q) => $(`#view-more ${q}`)?.focus({ preventScroll: true });
+  $$('[data-theme-opt]', c).forEach((b) => press(b, { tap: () => { prefs.theme = b.dataset.themeOpt; applyPrefs(); sync(); refocus(`[data-theme-opt="${prefs.theme}"]`); }, hapticTap: 'select' }));
+  press($('[data-a=tint]', c), { tap: () => { prefs.tint = !prefs.tint; applyPrefs(); sync(); refocus('[data-a=tint]'); }, hapticTap: 'select' });
   sync();
   press($('[data-a=mixrows]', c), { tap: () => openMixRows() });
   press($('[data-a=exp]', c), { tap: exportData });
@@ -3033,6 +3112,7 @@ function settingsPanel() {
   press($('[data-a=wipe]', c), { tap: async () => {
     if (!(await confirmSheet('Clear everything?', 'All items and looks will be deleted.', 'Clear'))) return;
     await db.clear('items'); await db.clear('outfits');
+    try { localStorage.removeItem(BRANDS_KEY); } catch { /* nothing kept */ }
     state.items = []; state.outfits = []; resetMix(); imgCache.clear(); resetClosetFilters(); render(); toast('Cleared');
   } });
   return c;
@@ -3178,13 +3258,22 @@ function actionFromHash() {
 function swayOnScroll() {
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
   let lastY = window.scrollY, lastT = performance.now(), cur = 0, target = 0, raf = 0;
-  const root = $('#view-closet'); // only the closet's tiles are restyled each frame, not the whole page
+  // only the tiles on screen sway (and are restyled each frame), not every tile in a large closet
+  const root = $('#view-closet'), inView = new Set();
+  const io = new IntersectionObserver((es) => es.forEach(({ target, isIntersecting }) => {
+    if (isIntersecting) inView.add(target);
+    else { inView.delete(target); target.style.removeProperty('--sway'); }
+  }));
+  const watch = () => { io.disconnect(); inView.clear(); root.querySelectorAll('.piece').forEach((t) => io.observe(t)); };
+  watch();
+  new MutationObserver(watch).observe(root, { childList: true }); // the grid is drawn again as a whole
+  const put = (v) => inView.forEach((t) => t.style.setProperty('--sway', v));
   const tick = () => {
     cur += (target - cur) * 0.18;
     target *= 0.86; // the push fades: it springs back when the scrolling stops
-    root.style.setProperty('--sway', cur.toFixed(3) + 'deg');
+    put(cur.toFixed(3) + 'deg');
     raf = Math.abs(cur) > 0.02 || Math.abs(target) > 0.02 ? requestAnimationFrame(tick) : 0;
-    if (!raf) root.style.setProperty('--sway', '0deg');
+    if (!raf) put('0deg');
   };
   window.addEventListener('scroll', () => {
     if (state.view !== 'closet') return;
