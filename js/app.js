@@ -191,8 +191,16 @@ function suggestLook(seeds = []) {
     }
     return chosen.map((x) => x.id);
   };
-  let ids = roll();
-  for (let i = 0; i < 6 && ids.length > 1 && (saved.has(lookKey(ids)) || recentPicks.includes(lookKey(ids))); i++) ids = roll();
+  // a look already saved, or one of the last few suggestions, is rolled again; when a small closet makes that
+  // hard, at least never the same look twice running and never a saved one, if any other could be found
+  const stale = (x) => saved.has(lookKey(x)) || recentPicks.includes(lookKey(x));
+  const last = recentPicks[recentPicks.length - 1];
+  let ids = roll(), fallback = null;
+  for (let i = 0; i < 24 && ids.length > 1 && stale(ids); i++) {
+    if (!fallback && !saved.has(lookKey(ids)) && lookKey(ids) !== last) fallback = ids;
+    ids = roll();
+  }
+  if (ids.length > 1 && stale(ids) && fallback) ids = fallback;
   if (ids.length) { recentPicks.push(lookKey(ids)); if (recentPicks.length > 6) recentPicks.shift(); }
   return ids;
 }
