@@ -206,7 +206,7 @@ main { padding: 4px 18px calc(130px + var(--safe-b)); }
 .piece .sticker {
   position: absolute; inset: 12%; width: 76%; height: 76%; object-fit: contain;
   filter: drop-shadow(0 6px 10px rgba(70, 58, 44, .08));
-  transition: transform .6s var(--spring);
+  transition: transform .6s var(--spring), opacity .3s var(--ease);
 }
 .piece-open:hover .sticker { transform: rotate(-1.5deg) scale(1.03); }
 .piece .meta, .look .meta { display: flex; flex-direction: column; gap: 6px; margin: 10px 6px 0; }
@@ -264,9 +264,6 @@ main { padding: 4px 18px calc(130px + var(--safe-b)); }
   background: var(--mark);
   transition: transform .6s var(--spring), width .5s var(--ease);
 }
-.fab { width: 62px; height: 62px; border-radius: 50%; display: grid; place-items: center; background: var(--sage); color: var(--on-sage); }
-.fab svg { width: 24px; height: 24px; stroke-width: 1.7; transition: transform .5s var(--spring); }
-.fab:active svg { transform: rotate(90deg); }
 
 /* ---------- overlays ---------- */
 #layer { position: fixed; inset: 0; z-index: 50; pointer-events: none; }
@@ -495,7 +492,6 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
 .ed-tray .swp { flex: none; width: 58px; height: 58px; border-radius: 16px; background: var(--card); padding: 6px; display: grid; place-items: center; }
 .ed-tray .swp img { width: 100%; height: 100%; object-fit: contain; }
 .ed-tray .swp[aria-pressed="true"] { outline: 2px solid var(--sage-deep); outline-offset: 2px; }
-.piece.wash .sticker, .pick-item.wash img { opacity: .38; }
 .round { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: var(--soft); color: var(--ink-2); flex: none; }
 .round.dark { background: var(--ink); color: var(--bg); }
 .round svg { width: 20px; height: 20px; }
@@ -556,8 +552,6 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
 .st-row span { flex: 1; color: var(--ink-2); }
 .st-row b { font: 500 calc(19px * var(--ts)) var(--serif); }
 .st-row .vp-c { width: 14px; height: 14px; transform: rotate(180deg); color: var(--ink-3); }
-.st-palette { display: flex; height: 26px; border-radius: 13px; overflow: hidden; box-shadow: inset 0 0 0 1px var(--line); }
-.st-palette i { flex: 1; min-width: 2px; }
 .stats .value-pill { margin-top: 26px; }
 .kv div { background: var(--card); padding: 13px 16px; border-radius: 18px; min-width: 0; }
 .kv small { display: block; font-size: calc(13px * var(--ts)); color: var(--ink-2); margin-bottom: 2px; }
@@ -690,3 +684,82 @@ body.choosing #tabbar { transform: translate(-50%, 160%); opacity: 0; pointer-ev
 
 /* very narrow phones: the fixer's two tools drop their icons so "Add back" fits beside Undo */
 @media (max-width: 359px) { .cut-more [data-a=erase] svg, .cut-more [data-a=add] svg { display: none; } }
+
+/* ---------- the + in the middle of the tab bar ---------- */
+.tab { width: min(66px, calc((100vw - 48px - 58px) / 4)); }
+.tab-plus { position: relative; z-index: 1; flex: none; width: 58px; height: 52px; display: grid; place-items: center; }
+.tab-plus > span { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: var(--sage); color: var(--on-sage); box-shadow: 0 6px 16px -8px rgba(60, 80, 50, .6); transition: transform .45s var(--spring); }
+.tab-plus svg { width: 22px; height: 22px; stroke-width: 1.8; transition: transform .5s var(--spring); }
+.tab-plus.pressing > span { transform: scale(.86); }
+.tab-plus.pressing svg { transform: rotate(90deg); }
+
+/* ---------- Mix: rows keep their size and scroll; the buttons stay above the tab bar ---------- */
+.mix {
+  --mh: clamp(100px, calc((100vh - 300px - var(--safe-b)) / min(var(--n, 4), 4)), 168px);
+  --mh: clamp(100px, calc((100dvh - 300px - var(--safe-b)) / min(var(--n, 4), 4)), 168px);
+  padding-bottom: 84px;
+}
+.mix-dock { position: fixed; z-index: 15; left: 50%; transform: translateX(-50%); width: min(720px, 100%); bottom: calc(14px + 62px + 10px + var(--safe-b)); pointer-events: none; }
+.mix-dock[hidden] { display: none; }
+.mix-dock::before { content: ''; position: absolute; left: 0; right: 0; top: -24px; bottom: -110px; z-index: -1; pointer-events: none; background: linear-gradient(to top, var(--bg) 64%, transparent); }
+.mix-dock .mix-actions { pointer-events: auto; padding: 0 18px; animation: dockIn .5s var(--spring) both; }
+.native-bar .mix-dock { bottom: calc(var(--native-bar, 90px) + 10px); }
+@keyframes dockIn { from { opacity: 0; transform: translateY(16px); } }
+
+/* ---------- Rows: the kinds open right under a row ---------- */
+.rows-item { display: block; min-height: 0; }
+.ri-main { display: flex; align-items: center; gap: 2px; min-height: 58px; }
+.kinds { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .34s var(--ease); }
+.kinds > div { min-height: 0; overflow: hidden; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; padding: 0 8px; }
+.open > .kinds { grid-template-rows: 1fr; }
+.kinds button { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 9px 1px 8px; margin-bottom: 10px; border-radius: 14px; background: var(--soft); color: var(--ink-2); font-size: calc(9.5px * var(--ts)); letter-spacing: -0.01em; transition: background .25s var(--ease), color .25s var(--ease), transform .35s var(--spring); }
+.kinds button svg { width: 20px; height: 20px; }
+.kinds button span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kinds button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.open > .kinds button { animation: kindIn .4s var(--spring) both; }
+.open > .kinds button:nth-child(2) { animation-delay: 30ms; }
+.open > .kinds button:nth-child(3) { animation-delay: 60ms; }
+.open > .kinds button:nth-child(4) { animation-delay: 90ms; }
+.open > .kinds button:nth-child(5) { animation-delay: 120ms; }
+@keyframes kindIn { from { opacity: 0; transform: translateY(-6px) scale(.9); } }
+.rows-item .rk > svg:last-child { transition: transform .35s var(--ease); }
+.rows-item.open .rk > svg:last-child { transform: rotate(180deg); }
+.rows-item.swap { animation: rowSwap .5s var(--spring); }
+@keyframes rowSwap { 0% { transform: scale(.96); opacity: .5; } 100% { transform: none; opacity: 1; } }
+.rows-adder { margin-bottom: 14px; }
+.rows-adder .rows-add { margin-bottom: 0; }
+.rows-adder .kinds > div { padding: 0; }
+.rows-adder .kinds button { margin: 10px 0 0; }
+.rows-adder.open .rows-add svg { transform: rotate(45deg); }
+.rows-add svg { transition: transform .4s var(--spring); }
+
+/* ---------- motion: pages, tabs, menus, hearts, settings ---------- */
+.view.active.from-right { animation: fromRight .46s var(--ease); }
+.view.active.from-left { animation: fromLeft .46s var(--ease); }
+@keyframes fromRight { from { opacity: 0; transform: translateX(34px); } }
+@keyframes fromLeft { from { opacity: 0; transform: translateX(-34px); } }
+.tab.active svg { animation: tabPop .5s var(--spring); }
+@keyframes tabPop { 40% { transform: translateY(-3px) scale(1.18); } }
+.ctx.show button[role=menuitem] { animation: ctxItem .42s var(--spring) both; animation-delay: calc(var(--i, 0) * 32ms + 30ms); }
+@keyframes ctxItem { from { opacity: 0; transform: translateY(8px) scale(.96); } }
+.heart.popped svg, .fav-btn.popped svg { animation: heartPop .5s var(--spring); }
+@keyframes heartPop { 0% { transform: scale(.6); } 55% { transform: scale(1.28); } 100% { transform: none; } }
+.chip.active { animation: chipPop .38s var(--spring); }
+@keyframes chipPop { 0% { transform: scale(.92); } 100% { transform: none; } }
+.seg button { transition: background .3s var(--ease), color .3s var(--ease); }
+.seg button.active { animation: chipPop .38s var(--spring); }
+.stats > *, .settings > * { animation: pieceIn .55s var(--ease) both; }
+.stats > *:nth-child(2), .settings > *:nth-child(2) { animation-delay: 40ms; }
+.stats > *:nth-child(3), .settings > *:nth-child(3) { animation-delay: 80ms; }
+.stats > *:nth-child(4), .settings > *:nth-child(4) { animation-delay: 120ms; }
+.stats > *:nth-child(5), .settings > *:nth-child(5) { animation-delay: 160ms; }
+.stats > *:nth-child(n+6), .settings > *:nth-child(n+6) { animation-delay: 200ms; }
+.btn { transition: transform .35s var(--spring), background .3s var(--ease), color .3s var(--ease), opacity .3s; }
+.btn.pressing { transform: scale(.95) !important; }
+
+/* ---------- Reduce motion (More > Settings): things simply appear ---------- */
+html.reduce-motion *, html.reduce-motion *::before, html.reduce-motion *::after {
+  animation-duration: .01ms !important; animation-delay: 0s !important;
+  transition-duration: .01ms !important; transition-delay: 0s !important;
+  scroll-behavior: auto !important;
+}

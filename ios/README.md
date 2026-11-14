@@ -1,6 +1,6 @@
 # Closet for iOS
 
-A small app that shows the web app full screen in a WKWebView, under a native iOS tab bar (Closet, Mix, Looks, More) with a round + beside it, plus real haptics and home-screen quick actions. Everything stays on the phone.
+A small app that shows the web app full screen in a WKWebView, under a native iOS tab bar (Closet, Mix, +, Looks, More) with a round + in its middle, plus real haptics and home-screen quick actions. Everything stays on the phone.
 
 What is in this folder:
 
@@ -29,7 +29,7 @@ If the old version still shows, choose Product > Clean Build Folder (Shift-Cmd-K
 
 ## Test the tab bar
 
-Inside the app the tab bar and the + are native iOS controls; the web page's own floating bar is hidden. On iOS 26 and later the bar is Liquid Glass and floats over the page, with the + as a round glass button beside it. On iOS 16 to 18 it is the classic bar, with the + at its right end.
+Inside the app the tab bar and the + are native iOS controls; the web page's own floating bar is hidden. On iOS 26 and later the bar is Liquid Glass and floats over the page, with the + as a round sage glass button in its middle. On iOS 16 to 18 it is the classic bar, with a plus.circle.fill in its middle.
 
 1. Start the app: Closet is selected. Scroll the closet: the items pass behind the bar, and the last row can still be scrolled clear of it.
 2. Tap Mix, Looks, More and Closet: the page follows each tap. Tap the tab you are on: the page scrolls back to the top.
@@ -37,14 +37,14 @@ Inside the app the tab bar and the + are native iOS controls; the web page's own
 4. Long-press an item to open its menu: the bar steps aside while the menu is open. Use Select in the closet: the bar steps aside while you are choosing.
 5. Let the page change tab by itself: with the app on Closet, go to the home screen, long-press the icon and pick Mix. The app comes back on Mix, and the Mix tab is selected.
 6. In More, set the theme to Dark while the iPhone is in Light mode: the bar, the + menu and the status bar turn dark too. Set it back to Auto.
-7. With VoiceOver on, swipe to the bar: each tab is read with its place ("Closet, tab, 1 of 4"), then the + as "Add". With Settings > Accessibility > Motion > Reduce Motion on, the bar fades instead of sliding.
-8. On iOS 26, check that the round + sits level with the glass bar and is spaced like the gap at the other end. If not, change `plusSize` and `plusMargin` in `AppViewController.swift` (search for "chosen without a device").
+7. With VoiceOver on, swipe to the bar: each tab is read with its place, then the + as "Add". With Settings > Accessibility > Motion > Reduce Motion on, the bar fades instead of sliding.
+8. On iOS 26, check that the round + sits in the middle of the glass bar, level with the tabs and well inside the capsule. If not, change `plusSize` in `AppViewController.swift` (search for "chosen without a device").
 
 ## Test long press
 
 Inside the app, the long-press menus on items, looks, colour swatches and board items are the web app's own. The native side keeps iOS out of the way: no link previews, no Save Image callout, no text selection or image dragging, except in text fields. When a menu opens you feel a medium tap. Haptics follow Settings > Sounds & Haptics > System Haptics; the Simulator plays none, so test them on the iPhone.
 
-To test: long-press an item in My closet (its menu opens, with no iOS menu, preview or magnifier); long-press a look; then edit an item's name and check that you can still select text in the field.
+To test: long-press an item in My Closet (its menu opens, with no iOS menu, preview or magnifier); long-press a look; then edit an item's name and check that you can still select text in the field.
 
 ## Test the quick actions
 
@@ -101,7 +101,7 @@ Then Add for Review, and Submit.
 - Not confirmed: whether WebKit counts `closet://` as a secure context. If not, `navigator.share` is not offered and a look picture goes through the download path, which opens the same share sheet.
 - Not confirmed: how WebKit's storage limits for websites treat a custom-scheme origin. You use the page each time you open the app, so they should not apply, but keep backups.
 - The launch screen follows the iPhone's light or dark setting; the in-app theme takes over as soon as the page starts.
-- Not confirmed on a device: the iOS 26 glass tab bar used on its own (without a tab bar controller). It is drawn by iOS, but the + was placed beside it without seeing it (see Test the tab bar, step 8), and the soft edge under the bar comes from `UIScrollEdgeElementContainerInteraction`, which an Apple engineer recommends for a standalone bar on the developer forums, but which was not seen working with a web view.
+- Not confirmed on a device: the iOS 26 glass tab bar used on its own (without a tab bar controller). It is drawn by iOS, but the + was placed on its middle item without seeing it (see Test the tab bar, step 8), and the soft edge under the bar comes from `UIScrollEdgeElementContainerInteraction`, which an Apple engineer recommends for a standalone bar on the developer forums, but which was not seen working with a web view.
 - Do not add `UIDesignRequiresCompatibility` to `Info.plist`: it turns off Liquid Glass, and the + would then be placed for the glass bar over a classic one.
 - On iPad, each window runs its own copy of the page. A change made in one window shows in another after that window reopens.
 - With a free Apple ID the app stops opening after 7 days. Run it from Xcode again.

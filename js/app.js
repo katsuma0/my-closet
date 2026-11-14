@@ -75,17 +75,22 @@ const state = {
 
 /* Appearance choices. Kept in localStorage so index.html can apply them before first paint. */
 const PREFS_KEY = 'closet.prefs';
-const prefs = { theme: 'system', tint: false }; // tint: each item's card (and each new look's board) takes a soft colour from it
+const prefs = { theme: 'system', tint: false, reduce: false }; // tint: each item's card (and each new look's board) takes a soft colour from it; reduce: Reduce motion
 try {
   const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
   if (['system', 'light', 'dark'].includes(saved.theme)) prefs.theme = saved.theme;
   prefs.tint = !!saved.tint;
+  prefs.reduce = !!saved.reduce;
 } catch { /* private mode: defaults */ }
+/** Reduce motion: chosen in More, or asked for by the phone. */
+const reduceMotion = () => prefs.reduce || !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+const smooth = () => (reduceMotion() ? 'auto' : 'smooth');
 const isDark = () => prefs.theme === 'dark' || (prefs.theme === 'system' && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
 function applyPrefs(save = true) {
   const r = document.documentElement;
   if (prefs.theme === 'system') r.removeAttribute('data-theme'); else r.dataset.theme = prefs.theme;
   r.removeAttribute('data-contrast'); // an option that no longer exists
+  r.classList.toggle('reduce-motion', prefs.reduce);
   document.querySelector('meta[name=theme-color]')?.setAttribute('content', isDark() ? '#1b1917' : '#f6f3ee');
   if (save) {
     try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* not stored, still applied */ }
@@ -149,8 +154,6 @@ function pairScore(a, b) {
   return 0.4;
 }
 const DAY = 86400000;
-/** In the wash: left out of suggestions until it is back. The mark lifts by itself after a week, so a forgotten one cannot hide a piece for good. */
-const inWash = (it) => !!it?.wash && Date.now() - it.wash < 7 * DAY;
 const lookKey = (ids) => [...new Set(ids)].sort().join(' ');
 const recentPicks = []; // the last few suggestions, so the next one differs
 
@@ -172,9 +175,7 @@ function suggestLook(seeds = []) {
     for (const cat of CAT_ORDER) {
       if (chosen.some((x) => x.cat === cat)) continue;
       if (cat === 'outer' && Math.random() > 0.45) continue; // a jacket is a choice, not a must
-      let pool = state.items.filter((it) => it.cat === cat);
-      const clean = pool.filter((it) => !inWash(it));
-      if (clean.length) pool = clean;
+      const pool = state.items.filter((it) => it.cat === cat);
       if (!pool.length) continue;
       const fits = pool.map((it) => (chosen.length ? chosen.reduce((sum, x) => sum + pairScore(it.colors?.[0], x.colors?.[0]), 0) / chosen.length : 0.6));
       const bestFit = Math.max(...fits);
@@ -358,6 +359,15 @@ function tintedSticker(it, hex) {
   }
   return tinted.get(key);
 }
+/** With Colour backgrounds on, an item's outline on its tinted card takes the item's main (or second) colour. */
+function tintOutline(img, it) {
+  if (!prefs.tint || !img || !it?.sticker) return;
+  const bg = tileTint(it);
+  if (!bg) return;
+  const p = tintedSticker(it, edgeFor(it, bg));
+  img.classList.add('retint');
+  p.then((url) => { if (url && img.isConnected) img.src = url; }).finally(() => img.classList.remove('retint'));
+}
 /** A soft background for one item's card, from its main colour (for "Colour backgrounds"). */
 function tileTint(it, dark = isDark()) {
   const col = it?.colors?.[0];
@@ -366,6 +376,8 @@ function tileTint(it, dark = isDark()) {
   if (ss < 14 || ll < 12 || ll > 92) return dark ? '#2b2724' : '#efe9e1'; // neutrals: a warm neutral
   return dark ? hslHex(hh, Math.min(ss, 24), 19) : hslHex(hh, Math.min(ss, 40), 90);
 }
+/** A look the user named (anything but the default "Untitled") is kept even with nothing on it. */
+const named = (o) => !!(o?.name || '').trim() && (o.name || '').trim() !== 'Untitled';
 /** Which outline a piece wears on a look: tinted to the piece when the look's background is automatic, else white or soft dark. */
 const edgeOf = (o, it) => (o.auto ? edgeFor(it, o.board) : darkBoard(o.board));
 // keep digits and a single decimal separator (comma typed on some keyboards becomes a dot)
@@ -584,8 +596,8 @@ function contextMenu(anchor, title, actions, point) {
     Object.assign(preview.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', margin: 0, animation: 'none', transform: anchor.style.transform || '' });
   }
   let done = false, closed = false;
-  for (const a of actions) {
-    const b = h(`<button role="menuitem" class="${a.danger ? 'danger' : ''}">${svg(a.icon)}<span>${esc(a.label)}</span></button>`);
+  for (const [i, a] of actions.entries()) {
+    const b = h(`<button role="menuitem" class="${a.danger ? 'danger' : ''}" style="--i:${i}">${svg(a.icon)}<span>${esc(a.label)}</span></button>`);
     // a second tap while the menu fades must not run the action again
     b.addEventListener('click', () => {
       if (done) return; done = true;
@@ -673,19 +685,27 @@ function confirmSheet(title, text, okLabel = 'Delete') {
 
 /* ------------------------------------------------------------------ navigation */
 
+const VIEW_ORDER = ['closet', 'mix', 'outfits', 'more'];
 function setView(v) {
   if (state.view === v) return;
+  const dir = Math.sign(VIEW_ORDER.indexOf(v) - VIEW_ORDER.indexOf(state.view));
   state.view = v;
+  $('#mix-dock').hidden = v !== 'mix';
   // a search belongs to the page it was typed on
   state.search = '';
   markTab(v);
-  $$('.view').forEach((s) => s.classList.toggle('active', s.id === 'view-' + v));
+  $$('.view').forEach((s) => {
+    const on = s.id === 'view-' + v;
+    s.classList.remove('from-left', 'from-right');
+    if (on && dir) { void s.offsetWidth; s.classList.add(dir > 0 ? 'from-right' : 'from-left'); }
+    s.classList.toggle('active', on);
+  });
   const title = $('#view-title');
   title.classList.add('swap');
   setTimeout(() => { title.textContent = $('#view-' + v).dataset.title; title.classList.remove('swap'); }, 200);
   render();
   postChrome();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  window.scrollTo({ top: 0, behavior: smooth() });
 }
 
 // Which tab the glass drop sits under.
@@ -707,7 +727,7 @@ function syncSelectTitle() {
   const show = state.view === 'closet' && state.items.length > 0;
   btn.hidden = !show;
   btn.textContent = sel.on ? 'Done' : 'Select';
-  if (state.view === 'closet') $('#view-title').textContent = sel.on ? (sel.ids.size ? `${sel.ids.size} chosen` : 'Choose items') : 'My closet';
+  if (state.view === 'closet') $('#view-title').textContent = sel.on ? (sel.ids.size ? `${sel.ids.size} chosen` : 'Choose items') : 'My Closet';
 }
 function render() {
   if (state.view !== 'closet' && sel.on) { sel.on = false; sel.ids.clear(); $('#select-bar')?.remove(); }
@@ -823,12 +843,12 @@ function renderCloset() {
     }
     const grid = h('<div class="grid"></div>');
     items.forEach((it, idx) => {
-      const card = h(`<div class="piece ${inWash(it) ? 'wash' : ''}" data-id="${it.id}" style="animation-delay:${Math.min(idx, 12) * 35}ms;--d:${[1, -0.8, 0.6, -1.1, 0.9, -0.7][idx % 6]}">
+      const card = h(`<div class="piece" data-id="${it.id}" style="animation-delay:${Math.min(idx, 12) * 35}ms;--d:${[1, -0.8, 0.6, -1.1, 0.9, -0.7][idx % 6]}">
         <button class="piece-open"><span class="tile"${prefs.tint ? ` style="background:${tileTint(it)}"` : ''}><img class="sticker" src="${stickerOf(it)}" data-st="${it.id}" alt="" loading="lazy" /></span>
         <span class="meta"><span class="name">${esc(it.name)}</span><span class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>
         ${heartBtn(it)}</div>`);
       const open = $('.piece-open', card);
-      if (inWash(it)) open.setAttribute('aria-label', `${it.name}, in the wash`);
+      tintOutline($('.sticker', card), it);
       if (sel.on) {
         card.classList.add('choosing'); card.classList.toggle('chosen', sel.ids.has(it.id));
         open.setAttribute('aria-pressed', String(sel.ids.has(it.id)));
@@ -853,6 +873,7 @@ function bindHeart(btn, x, store, after) {
   press(btn, { tap: async () => {
     await toggleFav(x, store);
     btn.setAttribute('aria-pressed', String(!!x.fav));
+    btn.classList.remove('popped'); void btn.offsetWidth; btn.classList.add('popped');
     after?.();
   }, hapticTap: null });
 }
@@ -1015,7 +1036,6 @@ function selectBar() {
     bar = h(`<div class="select-bar glass" id="select-bar" role="toolbar" aria-label="Chosen items">
       <button data-a="s-edit">${svg('edit')}<span>Edit</span></button>
       <button data-a="s-fav">${svg('heart')}<span>Favourite</span></button>
-      <button data-a="s-wash">${svg('drop')}<span>Wash</span></button>
       <button data-a="s-del" class="danger">${svg('trash')}<span>Delete</span></button>
     </div>`);
     $('#app').append(bar); // inside #app: unreachable while a sheet or menu is open, like the rest of the page
@@ -1027,12 +1047,11 @@ function selectBar() {
       for (const it of list) { it.fav = on; await db.put('items', it); }
       haptic('success'); toast(on ? `${list.length} favourite${list.length === 1 ? '' : 's'}` : 'Favourites removed'); renderCloset();
     }) });
-    press($('[data-a=s-wash]', bar), { tap: need(async (list) => { const on = !list.every(inWash); await setWash(list, on); toast(on ? 'In the wash' : 'Clean again'); }) });
     press($('[data-a=s-del]', bar), { tap: need(async (list) => {
       // say which looks are touched, and which go altogether, as deleting one item does
       const ids = new Set(list.map((i) => i.id));
       const used = state.outfits.filter((o) => o.pieces.some((p) => ids.has(p.itemId)));
-      const gone = used.filter((o) => o.pieces.every((p) => ids.has(p.itemId))).length;
+      const gone = used.filter((o) => !named(o) && o.pieces.every((p) => ids.has(p.itemId))).length;
       const note = !used.length ? '' : `They are in ${used.length} look${used.length === 1 ? '' : 's'}.` + (gone ? ` ${gone === used.length && gone === 1 ? 'That look' : `${gone} look${gone === 1 ? '' : 's'}`} will be deleted too.` : '');
       if (!(await confirmSheet(`Delete ${list.length} item${list.length === 1 ? '' : 's'}?`, note))) return;
       // choosing ends first and the items leave the page at once, so nothing else can act on them meanwhile
@@ -1156,32 +1175,11 @@ function itemMenu(it, anchor, e) {
     { icon: 'edit', label: 'Edit', run: () => openAdd({ item: it }) },
     { icon: 'look', label: 'Style a look', run: () => openEditor(null, suggestLook(it.id)) },
     { icon: 'heart', label: it.fav ? 'Remove favourite' : 'Favourite', run: async () => { await toggleFav(it, 'items'); render(); } },
-    { icon: 'drop', label: inWash(it) ? 'Clean again' : 'In the wash', run: () => setWash([it], !inWash(it)) },
     { icon: 'select', label: 'Select', run: () => startSelect(it.id) },
-    ...(state.items.filter(inWash).length > 1 ? [{ icon: 'sparkle', label: 'All clean', run: () => setWash(state.items.filter(inWash), false, true) }] : []),
-    { icon: 'copy', label: 'Duplicate', run: () => duplicateItem(it) },
     { icon: 'trash', label: 'Delete', danger: true, run: () => deleteItem(it) },
   ], e);
 }
 
-async function setWash(items, on, say = false) {
-  for (const it of items) {
-    if (on) it.wash = Date.now(); else delete it.wash;
-    await db.put('items', it);
-  }
-  haptic(on ? 'light' : 'success');
-  if (say) toast('All clean');
-  render();
-}
-
-async function duplicateItem(it) {
-  const copy = { ...it, id: uid(), created: Date.now(), name: it.name + ' (copy)', fav: false, worn: [] };
-  delete copy.wash;
-  await db.put('items', copy);
-  state.items.push(copy);
-  haptic('success'); toast('Duplicated');
-  render();
-}
 
 async function deleteItem(it, asked = false, quiet = false) {
   const used = state.outfits.filter((o) => o.pieces.some((p) => p.itemId === it.id));
@@ -1193,7 +1191,7 @@ async function deleteItem(it, asked = false, quiet = false) {
   for (const o of used) {
     o.pieces = o.pieces.filter((p) => p.itemId !== it.id);
     try {
-      if (!o.pieces.length) { await db.del('outfits', o.id); state.outfits = state.outfits.filter((x) => x.id !== o.id); continue; }
+      if (!o.pieces.length && !named(o)) { await db.del('outfits', o.id); state.outfits = state.outfits.filter((x) => x.id !== o.id); continue; }
       o.thumb = await renderThumb(o, await lookSize(o));
       await db.put('outfits', o);
     } catch { /* the look keeps its old picture */ }
@@ -1207,7 +1205,7 @@ function openDetail(it) {
   const cols = mainColors(it);
   const inLooks = state.outfits.filter((o) => o.pieces.some((p) => p.itemId === it.id));
   const c = h(`<div>
-    <div class="detail-img${prefs.tint ? ' tinted' : ''}"${prefs.tint ? ` style="background:${tileTint(it)}"` : ''}><img src="${stickerOf(it)}" data-st="${it.id}" alt="" />
+    <div class="detail-img${prefs.tint ? ' tinted' : ''}"${prefs.tint ? ` style="background:${tileTint(it)}"` : ''}><img src="${stickerOf(it)}" data-st="${it.id}" alt="" data-tint />
       <button class="fav-btn ${it.fav ? 'on' : ''}" data-a="fav" aria-label="Favourite" aria-pressed="${!!it.fav}">${svg('heart')}</button></div>
     <h2>${esc(it.name)}</h2>
     <div class="detail-meta">${it.brand ? `<span class="brand">${esc(it.brand)}</span>` : ''}<span>${esc(it.sub || CATS[it.cat]?.label || '')}</span><span class="dots">${cols.map((x) => `<i style="background:${x}"></i>`).join('')}</span><span>${cols.map(colorName).join(', ')}</span></div>
@@ -1217,7 +1215,8 @@ function openDetail(it) {
     <button class="btn ghost block" data-a="del">Delete</button>
   </div>`);
   const s = sheet(c);
-  const syncWorn = () => { const w = $('[data-worn]', c); w.textContent = [inWash(it) && 'In the wash', wornText(it)].filter(Boolean).join('. '); w.hidden = !w.textContent; };
+  tintOutline($('[data-tint]', c), it);
+  const syncWorn = () => { const w = $('[data-worn]', c); w.textContent = wornText(it) || ''; w.hidden = !w.textContent; };
   syncWorn();
   const fav = $('[data-a=fav]', c);
   press(fav, { tap: async () => {
@@ -1375,7 +1374,7 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     mode = mode === m ? null : m;
     syncTools();
     // the form below may have scrolled the photo (and its hint) up out of sight
-    if (mode) stage.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    if (mode) stage.scrollIntoView?.({ behavior: smooth(), block: 'nearest' });
     if (mode && !mask) { await process(); return; } // first use on an untouched sticker
     if (was && mode) { // from one tool straight to the other: the same photo, at the same zoom
       const z = { ...zv }; show(); Object.assign(zv, z); applyZoom();
@@ -1630,7 +1629,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
     }, hapticTap: null });
     followShape();
     renderSubs();
-    setTimeout(() => details.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' }), 450);
+    setTimeout(() => details.scrollIntoView?.({ behavior: smooth(), block: 'nearest' }), 450);
   }
 
   function renderSubs() {
@@ -1867,7 +1866,7 @@ function openBatch(files, presetCat = null) {
     const first = l.find((e) => !e.cat);
     if (first) {
       haptic('warning');
-      first.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      first.el.scrollIntoView({ block: 'center', behavior: smooth() });
       first.el.classList.remove('nudge'); void first.el.offsetWidth; first.el.classList.add('nudge');
       return;
     }
@@ -1978,7 +1977,7 @@ function openBatch(files, presetCat = null) {
 // the rows Mix shows, top to bottom: up to five, and a kind can have more than one row (a shirt under a jacket)
 const mix = { rows: [] };
 const MIX_KEY = 'closet.mixRows';
-const MIX_MAX = 5;
+const MIX_MAX = 10;
 const MIX_DEFAULT = ['outer', 'top', 'bottom', 'shoes', 'acc'];
 function mixCats() {
   try {
@@ -2001,14 +2000,11 @@ function renderMix(focusRow = null) {
     const e = h(`<div class="empty"><h3>Nothing to mix yet</h3><button class="btn">${svg('plus')} Add clothes</button></div>`);
     press($('.btn', e), { tap: () => openAdd() });
     root.append(e);
+    $('#mix-dock').innerHTML = '';
     return;
   }
-  // what a row can show: the pieces of its kind, newest first, without those in the wash (unless that leaves nothing)
-  const pool = (cat) => {
-    const all = state.items.filter((i) => i.cat === cat).sort((a, b) => b.created - a.created);
-    const clean = all.filter((i) => !inWash(i));
-    return clean.length ? clean : all;
-  };
+  // what a row can show: the items of its kind, newest first
+  const pool = (cat) => state.items.filter((i) => i.cat === cat).sort((a, b) => b.created - a.created);
   // a row of a kind with nothing in it yet waits, hidden, until something is added
   const rows = mix.rows.filter((r) => pool(r.cat).length);
   // a kind's second (or third) row is a layer: it starts on something the rows above are not showing
@@ -2061,7 +2057,7 @@ function renderMix(focusRow = null) {
     const go = (i, smooth = true) => {
       i = Math.max(0, Math.min(els.length - 1, i));
       if (i !== cur) { want = i; cur = i; r.id = slots[i] ? slots[i].id : null; mark(); save.classList.toggle('off', !chosen().length); }
-      track.scrollTo({ left: i * step(), behavior: smooth ? 'smooth' : 'auto' });
+      track.scrollTo({ left: i * step(), behavior: smooth && !reduceMotion() ? 'smooth' : 'auto' });
     };
     els.forEach((el, i) => press(el, { tap: () => go(i), hapticTap: null }));
     track.addEventListener('keydown', (e) => {
@@ -2080,7 +2076,10 @@ function renderMix(focusRow = null) {
     <button class="btn soft" data-a="shuffle" aria-label="Shuffle">${svg('swap')}<span>Shuffle</span></button>
   </div>`);
   actions.append(save);
-  wrap.append(actions);
+  const dock = $('#mix-dock');
+  dock.innerHTML = '';
+  dock.append(actions);
+  dock.hidden = state.view !== 'mix';
   root.append(wrap);
   starts.forEach((f) => f());
   save.classList.toggle('off', !chosen().length);
@@ -2113,9 +2112,10 @@ function renderMix(focusRow = null) {
 
 /** The Rows sheet: what Mix shows, top to bottom. Drag the handle to reorder, minus to remove, up to five rows. */
 function openMixRows() {
-  const c = h(`<div class="rows-ed"><h2>Rows</h2><p class="sub">What Mix shows, top to bottom. Drag ${svg('grip', 'class="inline"')} to move a row. Up to ${MIX_MAX}; a kind can have more than one.</p>
+  const kinds = (pressed, label) => `<div class="kinds" role="group" aria-label="${label}"><div>${CAT_ORDER.map((cat) => `<button type="button" data-k="${cat}" aria-pressed="${cat === pressed}" tabindex="-1">${svg(cat)}<span>${CATS[cat].label}</span></button>`).join('')}</div></div>`;
+  const c = h(`<div class="rows-ed"><h2>Rows</h2><p class="sub">What Mix shows, top to bottom. Tap a row to change it, drag ${svg('grip', 'class="inline"')} to move it. Up to ${MIX_MAX}; a kind can have more than one.</p>
     <ol class="rows-list"></ol>
-    <button class="btn soft rows-add" data-a="add">${svg('plus')}<span>Add a row</span></button>
+    <div class="rows-adder"><button class="btn soft rows-add" data-a="add" aria-expanded="false">${svg('plus')}<span>Add a row</span></button>${kinds(null, 'Kind of row to add')}</div>
     <div class="row-btns"><button class="btn soft" data-a="reset">Reset</button><button class="btn sage" data-a="done">Done</button></div></div>`);
   const list = $('.rows-list', c), add = $('[data-a=add]', c);
   const s = sheet(c, { onClose: () => { saveMixCats(); render(); } });
@@ -2124,20 +2124,38 @@ function openMixRows() {
   const changed = () => { saveMixCats(); if (state.view === 'mix') renderMix(); };
   let settling = 0; // a dropped row is landing; the list is about to be drawn again
   // focus goes to the moved row's handle, or (for a row just added or changed) to its kind button
-  const draw = (focus = null, enter = null, toKind = focus !== null && focus === enter) => {
+  // one kind strip open at a time: a row's, or the one under "Add a row" (`host` is the element that opens)
+  function openKinds(host) {
+    $$('.rows-item.open, .rows-adder.open', c).forEach((x) => {
+      if (x === host) return;
+      x.classList.remove('open');
+      $('[aria-expanded]', x)?.setAttribute('aria-expanded', 'false');
+      $$('[data-k]', x).forEach((b) => (b.tabIndex = -1));
+    });
+    if (!host) return;
+    host.classList.add('open');
+    $('[aria-expanded]', host)?.setAttribute('aria-expanded', 'true');
+    $$('[data-k]', host).forEach((b) => (b.tabIndex = 0));
+  }
+  const draw = (focus = null, enter = null, toKind = focus !== null && focus === enter, swapped = false) => {
     list.innerHTML = '';
     const n = mix.rows.length;
     mix.rows.forEach((r, i) => {
       const k = count(r.cat);
-      const li = h(`<li class="rows-item${r === enter ? ' in' : ''}">
+      const li = h(`<li class="rows-item${r === enter ? ' in' : ''}"><div class="ri-main">
         <button class="grip" aria-label="Move the ${CATS[r.cat].label.toLowerCase()} row: ${i + 1} of ${n}. Use the arrow keys">${svg('grip')}</button>
-        <button class="rk" aria-label="Row ${i + 1}, ${CATS[r.cat].label}. Change what it shows">${svg(r.cat)}<span>${CATS[r.cat].label}<small>${k ? `${k} ${k === 1 ? 'item' : 'items'}` : 'No items yet'}</small></span>${svg('chev')}</button>
-        <button class="rm" aria-label="Remove the ${CATS[r.cat].label.toLowerCase()} row"${n < 2 ? ' disabled' : ''}>${svg('minus')}</button></li>`);
+        <button class="rk" aria-expanded="false" aria-label="Row ${i + 1}, ${CATS[r.cat].label}. Change what it shows">${svg(r.cat)}<span>${CATS[r.cat].label}<small>${k ? `${k} ${k === 1 ? 'item' : 'items'}` : 'No items yet'}</small></span>${svg('chev')}</button>
+        <button class="rm" aria-label="Remove the ${CATS[r.cat].label.toLowerCase()} row"${n < 2 ? ' disabled' : ''}>${svg('minus')}</button></div>
+        ${kinds(r.cat, `Show in row ${i + 1}`)}</li>`);
       const grip = $('.grip', li), rk = $('.rk', li), rm = $('.rm', li);
-      press(rk, { tap: () => contextMenu(rk, 'Show', CAT_ORDER.map((cat) => ({ icon: cat, label: CATS[cat].label, run: () => {
-        if (r.cat === cat) return;
-        r.cat = cat; r.id = undefined; changed(); draw(r, null, true);
-      } })), null), hapticTap: null });
+      // the kinds open right under the row; choosing one changes the row where it is
+      press(rk, { tap: () => openKinds(li.classList.contains('open') ? null : li), hapticTap: 'select' });
+      $$('[data-k]', li).forEach((b) => press(b, { tap: () => {
+        const cat = b.dataset.k;
+        if (cat !== r.cat) { r.cat = cat; r.id = undefined; changed(); }
+        openKinds(null);
+        setTimeout(() => draw(r, null, true, true), 230); // after the strip has folded away
+      }, hapticTap: 'select' }));
       press(rm, { tap: () => {
         // one row always stays, counting rows already sliding away; a second tap on this one does nothing
         if (li.classList.contains('out') || mix.rows.length - list.querySelectorAll('.rows-item.out').length < 2) return;
@@ -2156,6 +2174,7 @@ function openMixRows() {
         mix.rows.splice(to, 0, ...mix.rows.splice(i, 1)); haptic('select'); changed(); draw(r);
       });
       dragRow(grip, li, i);
+      if (swapped && r === focus) li.classList.add('swap');
       list.append(li);
       if (r === focus) setTimeout(() => (toKind ? rk : grip).focus({ preventScroll: true }), 0);
     });
@@ -2168,6 +2187,7 @@ function openMixRows() {
     grip.addEventListener('pointerdown', (e) => {
       if (e.button !== 0 || d || settling) return;
       e.preventDefault(); e.stopPropagation();
+      openKinds(null); // rows move at their closed height
       try { grip.setPointerCapture(e.pointerId); } catch { /* gone already */ }
       const els = [...list.children], gap = els.length > 1 ? els[1].offsetTop - els[0].offsetTop : li.offsetHeight;
       d = { id: e.pointerId, y0: e.clientY, to: from, els, gap };
@@ -2204,14 +2224,17 @@ function openMixRows() {
     grip.addEventListener('pointerup', end);
     grip.addEventListener('pointercancel', end);
   }
+  const adder = $('.rows-adder', c);
   press(add, { tap: () => {
     if (mix.rows.length >= MIX_MAX) { haptic('warning'); toast(`Up to ${MIX_MAX} rows`); return; }
-    contextMenu(add, 'Add a row', CAT_ORDER.map((cat) => ({ icon: cat, label: CATS[cat].label, run: () => {
-      if (mix.rows.length >= MIX_MAX) { haptic('warning'); toast(`Up to ${MIX_MAX} rows`); return; } // a second menu opened meanwhile
-      const r = { cat, id: undefined };
-      mix.rows.push(r); changed(); draw(r, r);
-    } })), null);
-  }, hapticTap: null });
+    openKinds(adder.classList.contains('open') ? null : adder);
+  }, hapticTap: 'select' });
+  $$('[data-k]', adder).forEach((b) => press(b, { tap: () => {
+    openKinds(null);
+    if (mix.rows.length >= MIX_MAX) { haptic('warning'); toast(`Up to ${MIX_MAX} rows`); return; }
+    const r = { cat: b.dataset.k, id: undefined };
+    mix.rows.push(r); changed(); draw(r, r);
+  }, hapticTap: 'select' }));
   press($('[data-a=reset]', c), { tap: () => { mix.rows = MIX_DEFAULT.map((cat) => ({ cat, id: undefined })); changed(); draw(); haptic('success'); }, hapticTap: null });
   press($('[data-a=done]', c), { tap: () => s.close() });
   draw();
@@ -2675,7 +2698,7 @@ function openEditor(outfit = null, startIds = []) {
     if (!cur) return [];
     const rest = o.pieces.filter((q) => q !== p).map((q) => itemById(q.itemId)).filter(Boolean);
     const fit = (it) => (rest.length ? rest.reduce((sum, x) => sum + pairScore(it.colors?.[0], x.colors?.[0]), 0) / rest.length : 0);
-    return state.items.filter((it) => it.cat === cur.cat && it.id !== cur.id && !inWash(it)).sort((a, b) => fit(b) - fit(a));
+    return state.items.filter((it) => it.cat === cur.cat && it.id !== cur.id).sort((a, b) => fit(b) - fit(a));
   }
   function swapTray(p) {
     if (selected !== p) select(p);
@@ -2762,8 +2785,18 @@ function openEditor(outfit = null, startIds = []) {
   }
   press($('[data-a=shuffle]', c), { tap: () => { if (!o.pieces.length) return; closeTray(); haptic('success'); arrange(); }, hapticTap: null });
 
+  // an empty look is only kept when it has a name; an emptied, unnamed one is taken away. Returns false if nothing was kept
   async function save() {
     o.name = nameInp.value.trim() || 'Untitled';
+    if (!o.pieces.length && !named(o)) {
+      const i = state.outfits.findIndex((x) => x.id === o.id);
+      if (i < 0) { haptic('warning'); toast('Add an item, or give the look a name'); return false; }
+      state.outfits.splice(i, 1);
+      await db.del('outfits', o.id);
+      dirty = false;
+      haptic('light'); toast('Empty look removed');
+      return true;
+    }
     o.updated = Date.now();
     o.thumb = await renderThumb(o, bsize());
     const i = state.outfits.findIndex((x) => x.id === o.id);
@@ -2771,8 +2804,9 @@ function openEditor(outfit = null, startIds = []) {
     await db.put('outfits', o);
     dirty = false;
     haptic('success'); toast('Saved');
+    return true;
   }
-  press($('[data-a=save]', c), { tap: async () => { await save(); s.close(); setView('outfits'); renderOutfits(); }, hapticTap: null });
+  press($('[data-a=save]', c), { tap: async () => { if (!(await save())) return; s.close(); setView('outfits'); renderOutfits(); }, hapticTap: null });
   press($('[data-a=back]', c), { tap: async () => {
     if (dirty && o.pieces.length) {
       const keep = await confirmSheet('Discard changes?', '', 'Discard');
@@ -2800,7 +2834,7 @@ function openEditor(outfit = null, startIds = []) {
       if (!list.length) g.append(h(`<p style="grid-column:1/-1;color:var(--ink-3);text-align:center;padding:30px 0">${state.items.length ? 'No items' : 'Your closet is empty'}</p>`));
       list.forEach((it, idx) => {
         const inLook = o.pieces.some((p) => p.itemId === it.id);
-        const b = h(`<button class="pick-item ${inLook ? 'in' : ''} ${inWash(it) ? 'wash' : ''}" aria-label="${esc(it.name)}" style="animation:pieceIn .5s ${Math.min(idx, 14) * 25}ms both cubic-bezier(.22,1,.36,1)"><img src="${stickerOf(it)}" alt="" /><span class="on">${svg('check')}</span></button>`);
+        const b = h(`<button class="pick-item ${inLook ? 'in' : ''}" aria-label="${esc(it.name)}" style="animation:pieceIn .5s ${Math.min(idx, 14) * 25}ms both cubic-bezier(.22,1,.36,1)"><img src="${stickerOf(it)}" alt="" /><span class="on">${svg('check')}</span></button>`);
         press(b, {
           tap: () => {
             const existing = o.pieces.filter((p) => p.itemId === it.id);
@@ -2934,7 +2968,6 @@ function renderStats(root) {
   // "not worn lately" only means something once wears are being logged
   const logging = state.items.some((i) => (i.worn || []).some((w) => now - w < 45 * DAY_MS));
   const resting = state.items.filter((i) => now - lastWear(i) > 30 * DAY_MS).length;
-  const palette = state.items.map((i) => mainColors(i)[0]).filter(Boolean).sort((a, b) => rainbowKey(a) - rainbowKey(b));
   const c = h(`<div class="stats">
     <div class="big-total"><div class="v">${t.n}</div><small>item${t.n === 1 ? '' : 's'}</small></div>
     <div class="breakdown">${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 70}ms"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}</div>
@@ -2946,7 +2979,6 @@ function renderStats(root) {
     ${worn.length ? `<h3 class="st-h">Most worn</h3><div class="st-pieces">${worn.slice(0, 3).map((it) => `<button data-piece="${it.id}" aria-label="${esc(it.name)}, worn ${wears(it)} times"><span class="st-tile"><img src="${stickerOf(it)}" alt="" /></span><span class="st-n">${wears(it)}×</span></button>`).join('')}</div>` : ''}
     ${topLook ? `<h3 class="st-h">Most worn look</h3><button class="st-look" data-look="${topLook.id}"><span class="thumb-wrap" style="background:${topLook.board}"><img src="${topLook.thumb || ''}" alt="" /></span><span><b>${esc(topLook.name)}</b><small>${wears(topLook)}×</small></span></button>` : ''}
     ${logging && resting ? `<button class="st-row" data-a="resting"><span>Not worn lately</span><b>${resting}</b>${svg('back', 'class="vp-c"')}</button>` : ''}
-    ${palette.length > 1 ? `<h3 class="st-h">Colours</h3><div class="st-palette" role="img" aria-label="The colours of your closet">${palette.map((col) => `<i style="background:${col}"></i>`).join('')}</div>` : ''}
     <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}, ${status}. Open the price list">
       <span class="vp-l">Closet value</span><span class="vp-v">${money(t.v)}</span>
       <span class="vp-s">${status}</span>${svg('back', 'class="vp-c"')}
@@ -3010,7 +3042,7 @@ function openPrices(onClose) {
     if (r.bottom > top + height - 16 || r.top < head + 8) {
       // aim a little above the middle of what is visible, but never underneath the pinned total
       const target = Math.max(head + 8 + r.height / 2, top + height * 0.42);
-      sh.el.scrollBy({ top: r.top + r.height / 2 - target, behavior: 'smooth' });
+      sh.el.scrollBy({ top: r.top + r.height / 2 - target, behavior: smooth() });
     }
   };
   const onViewport = () => { const r = rows.find((x) => x.inp === document.activeElement); if (r) reveal(r.row, r.inp); };
@@ -3087,7 +3119,8 @@ function settingsPanel() {
     <div class="set-card">
       <div class="set-row"><span id="set-theme">Appearance</span><div class="seg three" role="group" aria-labelledby="set-theme">
         ${[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-theme-opt="${k}">${l}</button>`).join('')}</div></div>
-      <div class="set-row opt"><span id="set-tint">Colour backgrounds<small>Each item's card, and each new look, takes a soft tint of its colours</small></span><button class="switch" role="switch" data-a="tint" aria-labelledby="set-tint"></button></div>
+      <div class="set-row opt"><span id="set-tint">Colour backgrounds<small>Each item's card, and each new look, takes a soft tint of its colours, and its outline a colour of its own</small></span><button class="switch" role="switch" data-a="tint" aria-labelledby="set-tint"></button></div>
+      <div class="set-row opt"><span id="set-motion">Reduce motion<small>No sway, hops or slides: things simply appear</small></span><button class="switch" role="switch" data-a="motion" aria-labelledby="set-motion"></button></div>
     </div>
     <div class="set-card">
       <button class="set-link" data-a="mixrows">${svg('layers')}<span>Mix rows<small>${mix.rows.map((r) => esc(CATS[r.cat].label)).join(' · ')}</small></span>${svg('chev', 'class="go"')}</button>
@@ -3101,12 +3134,14 @@ function settingsPanel() {
   const sync = () => {
     $$('[data-theme-opt]', c).forEach((b) => { const on = b.dataset.themeOpt === prefs.theme; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
     const t = $('[data-a=tint]', c); t.classList.toggle('on', prefs.tint); t.setAttribute('aria-checked', String(prefs.tint));
+    const m = $('[data-a=motion]', c); m.classList.toggle('on', prefs.reduce); m.setAttribute('aria-checked', String(prefs.reduce));
   };
   // items are drawn with a different sticker edge on dark, so the pages are drawn again
   // applyPrefs draws the More page again: focus (and VoiceOver) stays on the control just used, in the new panel
   const refocus = (q) => $(`#view-more ${q}`)?.focus({ preventScroll: true });
   $$('[data-theme-opt]', c).forEach((b) => press(b, { tap: () => { prefs.theme = b.dataset.themeOpt; applyPrefs(); sync(); refocus(`[data-theme-opt="${prefs.theme}"]`); }, hapticTap: 'select' }));
   press($('[data-a=tint]', c), { tap: () => { prefs.tint = !prefs.tint; applyPrefs(); sync(); refocus('[data-a=tint]'); }, hapticTap: 'select' });
+  press($('[data-a=motion]', c), { tap: () => { prefs.reduce = !prefs.reduce; applyPrefs(); sync(); refocus('[data-a=motion]'); }, hapticTap: 'select' });
   sync();
   press($('[data-a=mixrows]', c), { tap: () => openMixRows() });
   press($('[data-a=exp]', c), { tap: exportData });
@@ -3191,8 +3226,8 @@ async function load() {
   const [items, outfits] = await Promise.all([db.all('items'), db.all('outfits')]);
   state.items = items || [];
   state.outfits = outfits || [];
-  // wash marks older than a week have lifted
-  for (const it of state.items) if (it.wash && !inWash(it)) { delete it.wash; db.put('items', it).catch(() => {}); }
+  // "In the wash" is no more: old marks go
+  for (const it of state.items) if (it.wash) { delete it.wash; db.put('items', it).catch(() => {}); }
   // Outerwear arrived after some jackets and coats were filed under Tops: move those once
   let moved = false;
   try { moved = localStorage.getItem('closet.outer') === '1'; } catch { /* moved again next time, harmlessly */ }
@@ -3258,7 +3293,6 @@ function actionFromHash() {
 
 /** Items sway a little while the closet scrolls, and settle when it stops. */
 function swayOnScroll() {
-  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
   let lastY = window.scrollY, lastT = performance.now(), cur = 0, target = 0, raf = 0;
   // only the tiles on screen sway (and are restyled each frame), not every tile in a large closet
   const root = $('#view-closet'), inView = new Set();
@@ -3278,7 +3312,7 @@ function swayOnScroll() {
     if (!raf) put('0deg');
   };
   window.addEventListener('scroll', () => {
-    if (state.view !== 'closet') return;
+    if (state.view !== 'closet' || reduceMotion()) return;
     const now = performance.now(), dy = window.scrollY - lastY, dt = Math.max(8, now - lastT);
     lastY = window.scrollY; lastT = now;
     target = Math.max(-4, Math.min(4, target + (dy / dt) * 1.6));

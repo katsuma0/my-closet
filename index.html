@@ -18,6 +18,7 @@
     try {
       var p = JSON.parse(localStorage.getItem('closet.prefs') || '{}'), r = document.documentElement;
       if (p.theme === 'light' || p.theme === 'dark') r.dataset.theme = p.theme;
+      if (p.reduce) r.classList.add('reduce-motion');
       if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.chrome) r.classList.add('native-bar');
     } catch (e) {}
   </script>
@@ -26,16 +27,17 @@
 <body>
   <div id="app">
     <header class="top">
-      <h1 class="title" id="view-title">My closet</h1>
+      <h1 class="title" id="view-title">My Closet</h1>
       <button class="text-btn" id="select-btn" hidden>Select</button>
     </header>
 
     <main id="views">
-      <section class="view active" id="view-closet" data-title="My closet"></section>
+      <section class="view active" id="view-closet" data-title="My Closet"></section>
       <section class="view" id="view-mix" data-title="Mix"></section>
       <section class="view" id="view-outfits" data-title="Looks"></section>
       <section class="view" id="view-more" data-title="More"></section>
     </main>
+    <div class="mix-dock" id="mix-dock" hidden></div>
 
     <nav class="tabbar" id="tabbar">
       <div class="tabs glass" id="tabs">
@@ -48,6 +50,9 @@
           <svg viewBox="0 0 24 24"><path d="M7 7h11l-3-3M17 17H6l3 3"/></svg>
           <span>Mix</span>
         </button>
+        <button class="tab-plus" id="fab" aria-label="Add clothes or create a look">
+          <span><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
+        </button>
         <button class="tab" data-view="outfits" aria-label="Looks">
           <svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="9" rx="1"/><rect x="13.5" y="3.5" width="7" height="5" rx="1"/><rect x="13.5" y="11.5" width="7" height="9" rx="1"/><rect x="3.5" y="15.5" width="7" height="5" rx="1"/></svg>
           <span>Looks</span>
@@ -57,9 +62,6 @@
           <span>More</span>
         </button>
       </div>
-      <button class="fab" id="fab" aria-label="Add clothes or create a look">
-        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-      </button>
     </nav>
   </div>
 
