@@ -1411,6 +1411,8 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     const hit = (mode === 'add' ? addTarget : eraseTarget)(mask, cut.raster.width, cut.raster.height, nx, ny, reach);
     if (!hit) { haptic('light'); return; } // nothing there to remove (or to add back)
     haptic('select');
+    // an Add back tap carries the finger's size in the photo, for the dab it brings back on an open area
+    if (mode === 'add') hit[3] = +(reach / Math.max(cut.raster.width, cut.raster.height)).toFixed(4);
     cut.seeds.push(hit);
     process();
   }

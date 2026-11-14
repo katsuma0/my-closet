@@ -2932,11 +2932,28 @@ export function computeMask(img, tolerance = DEFAULT_TOLERANCE, seeds = []) {
   // so a part of the piece that was cut away by mistake comes back without the background beside it.
   if (seeds && seeds.length) {
     const queue = new Int32Array(n), seen = new Uint8Array(n), added = new Uint8Array(n), tol = P.seedTol;
+    const userGone = new Uint8Array(n); // what the user's own Remove taps took away
     let any = false;
-    for (const [sx, sy, back] of seeds) {
+    for (const [sx, sy, back, rad] of seeds) {
       const x0 = Math.min(w - 1, Math.max(0, Math.round(sx * w)));
       const y0 = Math.min(h - 1, Math.max(0, Math.round(sy * h)));
       const s = y0 * w + x0, r = data[s * 4], g = data[s * 4 + 1], b = data[s * 4 + 2];
+      if (back && !mask[s] && userGone[s]) {
+        // Add back on a patch an earlier Remove tap took: that patch comes back as it was
+        let qh = 0, qt = 0;
+        seen.fill(0); seen[s] = 1; queue[qt++] = s;
+        while (qh < qt) {
+          const p = queue[qh++], x = p % w;
+          for (let k = 0; k < 4; k++) {
+            const q = k === 0 ? p - 1 : k === 1 ? p + 1 : k === 2 ? p - w : p + w;
+            if (k === 0 ? x === 0 : k === 1 ? x === w - 1 : (q < 0 || q >= n)) continue;
+            if (seen[q] || mask[q] || !userGone[q]) continue;
+            seen[q] = 1; queue[qt++] = q;
+          }
+        }
+        for (let i = 0; i < qt; i++) { const p = queue[i]; mask[p] = 1; added[p] = 1; userGone[p] = 0; }
+        continue;
+      }
       const R = Math.round(Math.max(w, h) * 0.14), R2 = R * R, t = back ? tol * 0.8 : tol;
       seen.fill(0);
       let qh = 0, qt = 0, clipped = false;
@@ -2960,9 +2977,22 @@ export function computeMask(img, tolerance = DEFAULT_TOLERANCE, seeds = []) {
           }
         }
       }
-      // an add-back colour that runs on past the tap's reach is the open backdrop, not a part that was cut away
-      if (back && clipped) continue;
-      for (let i = 0; i < qt; i++) { const p = queue[i]; mask[p] = back ? 1 : 0; added[p] = back ? 1 : 0; }
+      if (back && clipped) {
+        // the colour runs on past the tap's reach: open backdrop, or a part that looks just like it (a pale sleeve
+        // on a pale wall). Rather than a large blob, only a finger-sized dab comes back, so such a part can be
+        // painted back tap by tap (smaller dabs when zoomed in)
+        const rr = Math.max(2, Math.round((rad || 0.012) * Math.max(w, h))), r2 = rr * rr;
+        for (let y = Math.max(0, y0 - rr); y <= Math.min(h - 1, y0 + rr); y++) for (let x = Math.max(0, x0 - rr); x <= Math.min(w - 1, x0 + rr); x++) {
+          const q = y * w + x;
+          if (!mask[q] && (x - x0) * (x - x0) + (y - y0) * (y - y0) <= r2) { mask[q] = 1; added[q] = 1; }
+        }
+        continue;
+      }
+      for (let i = 0; i < qt; i++) {
+        const p = queue[i];
+        if (!back && mask[p]) userGone[p] = 1;
+        mask[p] = back ? 1 : 0; added[p] = back ? 1 : 0;
+      }
       if (!back) any = true;
     }
     if (any) dropSmall(mask, w, h, 1, 0, 0.04);
