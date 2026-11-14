@@ -2,11 +2,12 @@ import SwiftUI
 import UIKit
 import WebKit
 
-/// The web app, full screen, served from the app bundle at closet://app/.
-struct WebView: UIViewRepresentable {
+/// The web app, full screen, served from the app bundle at closet://app/, under the native
+/// tab bar of AppViewController.
+struct WebView: UIViewControllerRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeUIView(context: Context) -> WKWebView {
+    func makeUIViewController(context: Context) -> AppViewController {
         let configuration = WKWebViewConfiguration()
         // Default (persistent) website data store: localStorage and IndexedDB survive relaunches.
         configuration.setURLSchemeHandler(BundleSchemeHandler(), forURLScheme: AppOrigin.scheme)
@@ -14,7 +15,9 @@ struct WebView: UIViewRepresentable {
         // user content controller holds on it cannot form a retain cycle.
         configuration.userContentController.add(HapticHandler(), name: "haptic")
 
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        // Adds the "chrome" handler and its scripts, then makes the web view.
+        let controller = AppViewController(configuration: configuration)
+        let webView = controller.webView
         webView.allowsLinkPreview = false             // long press belongs to the page's own menus
         webView.isOpaque = false                      // no white flash before the first paint
         webView.backgroundColor = .closetPaper
@@ -28,11 +31,17 @@ struct WebView: UIViewRepresentable {
         }
         #endif
 
-        context.coordinator.start(webView)
-        return webView
+        let coordinator = context.coordinator
+        coordinator.chrome = controller
+        // The page loads once the controller is on screen and knows the height of its bar.
+        controller.onReady = { [weak controller] in
+            guard let controller else { return }
+            coordinator.start(controller.webView)
+        }
+        return controller
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
+    func updateUIViewController(_ controller: AppViewController, context: Context) {}
 }
 
 extension UIColor {
@@ -50,6 +59,8 @@ extension WebView {
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
         private weak var webView: WKWebView?
+        /// The native tab bar's controller, told when a page has loaded or is loaded again.
+        weak var chrome: AppViewController?
         private var loaded = false        // the first navigation has finished
         private var queued: String?       // a quick action waiting for that
         private var downloads: [WKDownload: URL] = [:]
@@ -93,6 +104,7 @@ extension WebView {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             loaded = true
+            chrome?.pageDidLoad()
             if let name = queued {
                 queued = nil
                 run(name)
@@ -104,6 +116,7 @@ extension WebView {
         /// a quick action still sitting in its hash.
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             loaded = false
+            chrome?.pageWillReload()
             webView.load(URLRequest(url: AppOrigin.startURL(action: nil)))
         }
 

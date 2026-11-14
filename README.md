@@ -23,7 +23,7 @@ Photo tip: lay the item flat on a light sheet or plain surface, or hang it again
 
 ## iPhone app
 
-`ios/` holds a ready-made Xcode project that wraps this web app: open `ios/Closet.xcodeproj`, pick your team, press Run. See `ios/README.md`, which also lists what to check before sending it to the App Store.
+`ios/` holds a ready-made Xcode project that wraps this web app: open `ios/Closet.xcodeproj`, pick your team, press Run. Inside the app the bottom bar is the native iOS tab bar (Closet, Mix, Looks, More) with a native + menu (Add clothes, Create a look, Surprise me); it steps aside while a sheet is open and follows the app's light or dark choice. The app has a privacy manifest (no data collected, no tracking) and runs entirely from the bundle. See `ios/README.md`, which also lists what to check before sending it to the App Store.
 
 ## Run it
 
