@@ -247,15 +247,27 @@ function layoutLook(list, ratio = 1.5) {
     y += band;
     const ids = by[k], n = ids.length, room = (right - left) / n;
     const dx = shift(b, main.length);
-    ids.forEach((i, j) => {
+    const ws = ids.map((i) => {
       const ar = list[i].ar || AR[kind(i) || k];
       const wide = kind(i) === 'outer' ? base.top * 1.06 : base[k];
       // as wide as its kind usually is, but never so tall that it leaves its band by much, nor wider than its share of the row
-      const w = Math.max(0.15, Math.min(0.6, Math.min(wide * (hasAcc ? 0.92 : 1), n > 1 ? room * 1.22 : 1, band * (k === 'bottom' ? 1.3 : 1.12) * ratio / ar) * grow()));
+      return Math.max(0.15, Math.min(0.6, Math.min(wide * (hasAcc ? 0.92 : 1), n > 1 ? room * 1.22 : 1, band * (k === 'bottom' ? 1.3 : 1.12) * ratio / ar) * grow()));
+    });
+    const xs = ids.map((i, j) => (n === 1 ? (left + right) / 2 : left + room * (j + 0.5)) + dx + jit((n > 1 ? 0.035 : 0.06) * loose));
+    if (n > 1) {
+      // however much the row leans or scatters, its items stay side by side: at least three quarters of a share apart,
+      // and the whole row slides back onto the board rather than squeezing up at an edge
+      const gap = room * 0.75;
+      for (let j = 1; j < n; j++) xs[j] = Math.max(xs[j], xs[j - 1] + gap);
+      const over = xs[n - 1] - (0.97 - ws[n - 1] / 2);
+      if (over > 0) for (let j = 0; j < n; j++) xs[j] -= over;
+      const under = 0.03 + ws[0] / 2 - xs[0];
+      if (under > 0) for (let j = 0; j < n; j++) xs[j] += under;
+    }
+    ids.forEach((i, j) => {
+      const w = ws[j];
       // tilts never go past what still reads as laid out by hand
-      const x0 = n === 1 ? (left + right) / 2 : left + room * (j + 0.5);
-      const x = inside(x0 + dx + jit((n > 1 ? 0.035 : 0.06) * loose), w);
-      at[i] = { x, y: cy + (n > 1 ? (j % 2 ? 0.026 : -0.026) : 0) + jit(0.028 * loose), w, rot: jit((k === 'shoes' ? 16 : 11) * loose) };
+      at[i] = { x: inside(xs[j], w), y: cy + (n > 1 ? (j % 2 ? 0.026 : -0.026) : 0) + jit(0.028 * loose), w, rot: jit((k === 'shoes' ? 16 : 11) * loose) };
     });
   });
   // accessories: alternate sides, top to bottom, clear of the foot of the board when shoes are there
