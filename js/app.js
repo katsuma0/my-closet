@@ -1406,7 +1406,17 @@ function openDetail(it) {
   press(fav, { tap: async () => {
     await toggleFav(it, 'items');
     fav.classList.toggle('on', !!it.fav); fav.setAttribute('aria-pressed', String(!!it.fav));
-    $$(`#views [data-id="${CSS.escape(it.id)}"] .heart`).forEach((b) => b.setAttribute('aria-pressed', String(!!it.fav)));
+    // the card behind: a heart appears on it (or goes) to match
+    const card = $(`#view-closet .piece[data-id="${CSS.escape(it.id)}"]`);
+    if (card) {
+      const old = $('.heart', card);
+      if (it.fav && !old) {
+        const heart = h(heartBtn(it));
+        card.append(heart);
+        bindHeart(heart, it, 'items', () => { if (!it.fav) { heart.classList.add('gone'); setTimeout(() => heart.remove(), 260); } if (view.closet.fav) renderCloset(); });
+      } else if (!it.fav && old) old.remove();
+    }
+    if (view.closet.fav && state.view === 'closet') renderCloset();
   }, hapticTap: null });
   $$('[data-look]', c).forEach((b) => press(b, { tap: () => { const o = state.outfits.find((x) => x.id === b.dataset.look); s.close(); if (o) openEditor(o); } }));
   // a look built around this piece, ready to adjust
