@@ -3082,6 +3082,38 @@ function cleanEdgeColors(m, col, W, H) {
   }
 }
 
+/** A box blur of radius r on a float mask (a sliding sum along rows, then along columns). */
+function blurMask(src, W, H, r) {
+  const tmp = new Float32Array(W * H), out = new Float32Array(W * H), n = 2 * r + 1;
+  for (let y = 0; y < H; y++) {
+    const o = y * W;
+    let sum = 0;
+    for (let x = -r; x <= r; x++) sum += src[o + Math.min(W - 1, Math.max(0, x))];
+    for (let x = 0; x < W; x++) {
+      tmp[o + x] = sum / n;
+      sum += src[o + Math.min(W - 1, x + r + 1)] - src[o + Math.max(0, x - r)];
+    }
+  }
+  for (let x = 0; x < W; x++) {
+    let sum = 0;
+    for (let y = -r; y <= r; y++) sum += tmp[Math.min(H - 1, Math.max(0, y)) * W + x];
+    for (let y = 0; y < H; y++) {
+      out[y * W + x] = sum / n;
+      sum += tmp[Math.min(H - 1, y + r + 1) * W + x] - tmp[Math.max(0, y - r) * W + x];
+    }
+  }
+  return out;
+}
+/** Smooth a mask's outline: blur it twice (close to a Gaussian) and keep what is more than half in. */
+function smoothMask(m, W, H, r) {
+  let a = Float32Array.from(m);
+  a = blurMask(blurMask(a, W, H, r), W, H, r);
+  const out = new Uint8Array(W * H);
+  let n = 0;
+  for (let p = 0; p < out.length; p++) if (a[p] >= 0.5) { out[p] = 1; n++; }
+  return n > 50 ? out : m; // never smooth a small piece away
+}
+
 /** Edge colour of the sticker variant shown on dark backgrounds (the default edge is white). */
 export const EDGE_DARK = [78, 72, 65];
 
@@ -3090,7 +3122,7 @@ export const EDGE_DARK = [78, 72, 65];
  * Returns { dataURL, darkURL, colors, width, height }: `dataURL` has the white border, `darkURL` the same
  * sticker with the soft dark border used on dark backgrounds (null when `dark` is false).
  */
-export function renderSticker(img, mask, { border = 0.022, removeBg = true, dark = true, shave = null } = {}) {
+export function renderSticker(img, mask, { border = 0.022, removeBg = true, dark = true, shave = null, smooth = 0 } = {}) {
   const { data, width: w, height: h } = img;
   if (!removeBg) mask = new Uint8Array(w * h).fill(1);
 
@@ -3114,6 +3146,11 @@ export function renderSticker(img, mask, { border = 0.022, removeBg = true, dark
   for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
     const p = (y + pad) * W + x + pad, si = ((y + y0) * w + x + x0) * 4;
     col[p * 3] = data[si]; col[p * 3 + 1] = data[si + 1]; col[p * 3 + 2] = data[si + 2];
+  }
+  if (removeBg && smooth > 0) {
+    // Smooth edges (0 to 5): the outline is blurred and cut again at half way, so jagged steps, nicks and
+    // little spikes round off; a higher setting smooths over a wider stretch
+    m = smoothMask(m, W, H, Math.max(1, Math.round(smooth * Math.max(bw, bh) / 450)));
   }
   if (removeBg) {
     const sv = shave ?? Math.max(1, Math.min(3, Math.round(Math.max(bw, bh) * 0.0018)));
