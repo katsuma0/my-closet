@@ -75,11 +75,11 @@ const state = {
 
 /* Appearance choices. Kept in localStorage so index.html can apply them before first paint. */
 const PREFS_KEY = 'closet.prefs';
-const prefs = { theme: 'system', tint: false, reduce: false }; // tint: each item's card (and each new look's board) takes a soft colour from it; reduce: Reduce motion
+// tint: each item's card (and each new look's board) takes a soft colour from it, always; reduce: Reduce motion
+const prefs = { theme: 'system', tint: true, reduce: false };
 try {
   const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
   if (['system', 'light', 'dark'].includes(saved.theme)) prefs.theme = saved.theme;
-  prefs.tint = !!saved.tint;
   prefs.reduce = !!saved.reduce;
 } catch { /* private mode: defaults */ }
 /** Reduce motion: chosen in More, or asked for by the phone. */
@@ -2023,48 +2023,89 @@ function renderMix(focusRow = null) {
       const free = items.find((i) => !taken(r).has(i.id));
       r.id = r.extra ? (free ? free.id : null) : r.cat === 'acc' || r.cat === 'outer' ? null : (free || items[0]).id;
     }
-    const slots = [null, ...items];
+    const slots = [null, ...items], L = slots.length;
+    // The row loops round: its slots (the empty one, then the items) repeat in copies on both sides, so the
+    // empty one sits between the last item and the first. Whenever the row comes to rest it is moved, unseen,
+    // back into its middle copy, so a finger never reaches an end.
+    const K = Math.min(61, Math.max(3, 2 * Math.ceil(24 / L) + 1)), M = Math.floor(K / 2);
     const row = h(`<div class="mix-row"><div class="mix-track" role="listbox" tabindex="0" aria-label="${r.extra ? 'Another ' + ONE[r.cat].toLowerCase() : CATS[r.cat].label}"></div></div>`);
     const track = $('.mix-track', row);
-    slots.forEach((it, si) => track.append(it
-      ? h(`<button class="mix-item" role="option" tabindex="-1" id="mix-${ri}-${si}" aria-label="${esc(it.name)}"><img src="${stickerOf(it)}" data-st="${it.id}" alt="" draggable="false" /></button>`)
-      : h(`<button class="mix-item none" role="option" tabindex="-1" id="mix-${ri}-${si}" aria-label="None"><span></span></button>`)));
+    const frag = document.createDocumentFragment();
+    for (let k = 0; k < K; k++) slots.forEach((it, si) => {
+      const j = k * L + si, copy = k !== M ? ' aria-hidden="true"' : ''; // a screen reader hears each item once
+      frag.append(it
+        ? h(`<button class="mix-item" role="option" tabindex="-1" id="mix-${ri}-${j}"${copy} aria-label="${esc(it.name)}"><img src="${stickerOf(it)}" data-st="${it.id}" alt="" draggable="false" /></button>`)
+        : h(`<button class="mix-item none" role="option" tabindex="-1" id="mix-${ri}-${j}"${copy} aria-label="None"><span></span></button>`));
+    });
+    track.append(frag);
     const els = [...track.children];
+    const at = (j) => slots[((j % L) + L) % L];
     const step = () => (els.length > 1 ? els[1].offsetLeft - els[0].offsetLeft : 1);
-    let cur = Math.max(0, slots.findIndex((it) => (it ? it.id : null) === (r.id || null)));
+    let cur = M * L + Math.max(0, slots.findIndex((it) => (it ? it.id : null) === (r.id || null)));
     let want = -1; // the place a tap, a key or Shuffle is sliding this row to
-    const mark = () => { els.forEach((el, i) => el.setAttribute('aria-selected', String(i === cur))); track.setAttribute('aria-activedescendant', els[cur].id); };
-    // the piece in the middle is the one chosen; its neighbours shrink and fade as they leave
+    let marked = null;
+    const mark = () => {
+      if (marked && marked !== els[cur]) marked.setAttribute('aria-selected', 'false');
+      marked = els[cur]; marked.setAttribute('aria-selected', 'true');
+      track.setAttribute('aria-activedescendant', marked.id);
+    };
+    // the item in the middle is the one chosen; its neighbours shrink and fade as they leave
+    // (only the few around the middle are restyled each frame)
+    let painted = [0, -1];
     const paint = () => {
       const pos = track.scrollLeft / step();
-      els.forEach((el, i) => {
+      const lo = Math.max(0, Math.floor(pos) - 3), hi = Math.min(els.length - 1, Math.ceil(pos) + 3);
+      for (let i = painted[0]; i <= painted[1]; i++) if (i < lo || i > hi) { els[i].style.transform = ''; els[i].style.opacity = ''; }
+      for (let i = lo; i <= hi; i++) {
         const t = Math.max(0, 1 - Math.abs(i - pos));
-        el.style.transform = `scale(${(0.62 + 0.38 * t).toFixed(3)})`;
-        el.style.opacity = (0.28 + 0.72 * t).toFixed(3);
-      });
+        els[i].style.transform = `scale(${(0.62 + 0.38 * t).toFixed(3)})`;
+        els[i].style.opacity = (0.28 + 0.72 * t).toFixed(3);
+      }
+      painted = [lo, hi];
       const now = Math.max(0, Math.min(els.length - 1, Math.round(pos)));
-      if (want >= 0) { if (now !== want) return; want = -1; } // a row on its way to a piece keeps that piece chosen
+      if (want >= 0) { if (now !== want) return; want = -1; } // a row on its way to an item keeps that item chosen
       if (now === cur) return;
-      cur = now; r.id = slots[now] ? slots[now].id : null;
+      cur = now; r.id = at(now) ? at(now).id : null;
       haptic('select'); mark();
       save.classList.toggle('off', !chosen().length);
     };
+    // back to the middle copy, at rest only (no finger down, no slide under way): the same picture, so unseen
+    let touching = 0, restTimer = 0;
+    const recenter = () => {
+      if (want >= 0 || touching) return;
+      const k = Math.floor(cur / L);
+      if (k === M) return;
+      const by = (M - k) * L;
+      cur += by;
+      track.scrollLeft += by * step();
+      paint(); mark();
+    };
+    const rest = (ms = 160) => { clearTimeout(restTimer); restTimer = setTimeout(recenter, ms); };
     let raf = 0;
-    track.addEventListener('scroll', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; paint(); }); }, { passive: true });
+    track.addEventListener('scroll', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; paint(); }); rest(); }, { passive: true });
+    track.addEventListener('touchstart', (e) => { touching = e.touches.length; }, { passive: true });
+    ['touchend', 'touchcancel'].forEach((t) => track.addEventListener(t, (e) => { touching = e.touches.length; rest(); }, { passive: true }));
     // a finger on the row, or the end of the slide, hands the choice back to where the row is
     const settle = () => { if (want >= 0) { want = -1; paint(); } };
     ['pointerdown', 'wheel', 'scrollend'].forEach((t) => track.addEventListener(t, settle, { passive: true }));
     const go = (i, smooth = true) => {
       i = Math.max(0, Math.min(els.length - 1, i));
-      if (i !== cur) { want = i; cur = i; r.id = slots[i] ? slots[i].id : null; mark(); save.classList.toggle('off', !chosen().length); }
+      if (i !== cur) { want = i; cur = i; r.id = at(i) ? at(i).id : null; mark(); save.classList.toggle('off', !chosen().length); }
       track.scrollTo({ left: i * step(), behavior: smooth && !reduceMotion() ? 'smooth' : 'auto' });
+      rest(smooth ? 700 : 60);
     };
     els.forEach((el, i) => press(el, { tap: () => go(i), hapticTap: null }));
     track.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
       e.preventDefault(); go(cur + (e.key === 'ArrowRight' ? 1 : -1));
     });
-    r.go = (id) => go(Math.max(0, slots.findIndex((it) => (it ? it.id : null) === (id || null))));
+    // to an item by the shorter way round
+    r.go = (id) => {
+      const s = Math.max(0, slots.findIndex((it) => (it ? it.id : null) === (id || null)));
+      let d = s - (((cur % L) + L) % L);
+      if (d > L / 2) d -= L; else if (d < -L / 2) d += L;
+      go(cur + d);
+    };
     if (r === focusRow) focusEl = track;
     wrap.append(row);
     starts.push(() => { track.scrollLeft = cur * step(); paint(); mark(); });
@@ -3119,8 +3160,7 @@ function settingsPanel() {
     <div class="set-card">
       <div class="set-row"><span id="set-theme">Appearance</span><div class="seg three" role="group" aria-labelledby="set-theme">
         ${[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-theme-opt="${k}">${l}</button>`).join('')}</div></div>
-      <div class="set-row opt"><span id="set-tint">Colour backgrounds<small>Each item's card, and each new look, takes a soft tint of its colours, and its outline a colour of its own</small></span><button class="switch" role="switch" data-a="tint" aria-labelledby="set-tint"></button></div>
-      <div class="set-row opt"><span id="set-motion">Reduce motion<small>No sway, hops or slides: things simply appear</small></span><button class="switch" role="switch" data-a="motion" aria-labelledby="set-motion"></button></div>
+      <div class="set-row opt"><span id="set-motion">Reduce motion</span><button class="switch" role="switch" data-a="motion" aria-labelledby="set-motion"></button></div>
     </div>
     <div class="set-card">
       <button class="set-link" data-a="mixrows">${svg('layers')}<span>Mix rows<small>${mix.rows.map((r) => esc(CATS[r.cat].label)).join(' · ')}</small></span>${svg('chev', 'class="go"')}</button>
@@ -3133,14 +3173,12 @@ function settingsPanel() {
   </section>`);
   const sync = () => {
     $$('[data-theme-opt]', c).forEach((b) => { const on = b.dataset.themeOpt === prefs.theme; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
-    const t = $('[data-a=tint]', c); t.classList.toggle('on', prefs.tint); t.setAttribute('aria-checked', String(prefs.tint));
     const m = $('[data-a=motion]', c); m.classList.toggle('on', prefs.reduce); m.setAttribute('aria-checked', String(prefs.reduce));
   };
   // items are drawn with a different sticker edge on dark, so the pages are drawn again
   // applyPrefs draws the More page again: focus (and VoiceOver) stays on the control just used, in the new panel
   const refocus = (q) => $(`#view-more ${q}`)?.focus({ preventScroll: true });
   $$('[data-theme-opt]', c).forEach((b) => press(b, { tap: () => { prefs.theme = b.dataset.themeOpt; applyPrefs(); sync(); refocus(`[data-theme-opt="${prefs.theme}"]`); }, hapticTap: 'select' }));
-  press($('[data-a=tint]', c), { tap: () => { prefs.tint = !prefs.tint; applyPrefs(); sync(); refocus('[data-a=tint]'); }, hapticTap: 'select' });
   press($('[data-a=motion]', c), { tap: () => { prefs.reduce = !prefs.reduce; applyPrefs(); sync(); refocus('[data-a=motion]'); }, hapticTap: 'select' });
   sync();
   press($('[data-a=mixrows]', c), { tap: () => openMixRows() });
@@ -3249,11 +3287,8 @@ function bindChrome() {
   }));
   const fab = $('#fab');
   press(fab, {
-    // the + offers the two things there are to make
-    tap: (e) => contextMenu(fab, null, [
-      { icon: 'top', label: 'Add clothes', run: () => openAdd() },
-      { icon: 'look', label: 'Create a look', run: () => openEditor() },
-    ], e),
+    // the + opens the Create sheet: adding clothes and making looks, big and easy to hit
+    tap: () => openCreate(),
     // held down: the shortcuts
     long: (e) => contextMenu(fab, null, [
       { icon: 'camera', label: 'Take photo', run: () => quickPick('camera') },
@@ -3278,7 +3313,7 @@ function bindChrome() {
  */
 function closetAction(name) {
   if (stack.length || menuOpen) return false;
-  const run = { add: () => openAdd(), look: () => openEditor(), surprise: () => surpriseLook(), mix: () => setView('mix'), more: () => setView('more'), stats: () => setView('more'), closet: () => setView('closet'), looks: () => setView('outfits') }[name];
+  const run = { create: () => openCreate(), add: () => openAdd(), look: () => openEditor(), surprise: () => surpriseLook(), mix: () => setView('mix'), more: () => setView('more'), stats: () => setView('more'), closet: () => setView('closet'), looks: () => setView('outfits') }[name];
   if (!run) return false;
   run();
   return true;
@@ -3318,6 +3353,33 @@ function swayOnScroll() {
     target = Math.max(-4, Math.min(4, target + (dy / dt) * 1.6));
     if (!raf) raf = requestAnimationFrame(tick);
   }, { passive: true });
+}
+
+/** The + : everything there is to make, on big tiles that fill most of the screen. */
+function openCreate() {
+  const none = !state.items.length;
+  const c = h(`<div class="create"><h2>Create</h2>
+    <h3 class="cr-h">Add clothes</h3>
+    <div class="cr-grid">
+      <button class="cr-tile t1" data-a="camera">${svg('camera')}<b>Take a photo</b><small>One item, straight from the camera</small></button>
+      <button class="cr-tile t2" data-a="library">${svg('image')}<b>Choose photos</b><small>One, or many at once</small></button>
+    </div>
+    <h3 class="cr-h">Make a look</h3>
+    <div class="cr-grid">
+      <button class="cr-tile t3" data-a="look">${svg('look')}<b>New look</b><small>Start on a blank board</small></button>
+      <button class="cr-tile t4${none ? ' off' : ''}" data-a="surprise">${svg('sparkle')}<b>Surprise me</b><small>${none ? 'Add some clothes first' : 'A look put together for you'}</small></button>
+    </div>
+  </div>`);
+  const s = sheet(c);
+  s.el.classList.add('tall');
+  // the photo pickers open within the tap itself (the phone asks for that); the rest once the sheet is away
+  press($('[data-a=camera]', c), { tap: () => { quickPick('camera'); s.close(); } });
+  press($('[data-a=library]', c), { tap: () => { quickPick('library'); s.close(); } });
+  press($('[data-a=look]', c), { tap: () => { s.close(); setTimeout(() => openEditor(), 160); } });
+  press($('[data-a=surprise]', c), { tap: () => {
+    if (none) { haptic('warning'); toast('Add some clothes first'); return; }
+    s.close(); setTimeout(() => surpriseLook(), 160);
+  } });
 }
 
 function quickPick(kind) {

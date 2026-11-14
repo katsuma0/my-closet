@@ -33,7 +33,7 @@ Inside the app the tab bar and the + are native iOS controls; the web page's own
 
 1. Start the app: Closet is selected. Scroll the closet: the items pass behind the bar, and the last row can still be scrolled clear of it.
 2. Tap Mix, Looks, More and Closet: the page follows each tap. Tap the tab you are on: the page scrolls back to the top.
-3. Tap +: an iOS menu opens with Add clothes, Create a look and Surprise me. Pick Add clothes: the bar and the + slide away while the sheet is up, and come back with a little bounce when you close it. Try Create a look (the editor, full screen) and Surprise me the same way.
+3. Tap +: the page's Create sheet opens (Take a photo, Choose photos, New look, Surprise me); touch and hold + for an iOS menu with Add clothes, Create a look and Surprise me. Pick Add clothes: the bar and the + slide away while the sheet is up, and come back with a little bounce when you close it. Try Create a look (the editor, full screen) and Surprise me the same way.
 4. Long-press an item to open its menu: the bar steps aside while the menu is open. Use Select in the closet: the bar steps aside while you are choosing.
 5. Let the page change tab by itself: with the app on Closet, go to the home screen, long-press the icon and pick Mix. The app comes back on Mix, and the Mix tab is selected.
 6. In More, set the theme to Dark while the iPhone is in Light mode: the bar, the + menu and the status bar turn dark too. Set it back to Auto.
