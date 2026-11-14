@@ -1,8 +1,8 @@
 import UIKit
 import WebKit
 
-/// The app's one screen: the web app full screen, with a native iOS tab bar and a round +
-/// over its bottom edge. The page scrolls behind them, as in any iOS app.
+/// The app's one screen: the web app full screen, with a native iOS tab bar whose middle is a round +
+/// (Closet, Mix, +, Looks, More). The page scrolls behind them, as in any iOS app.
 ///
 /// The contract with the page (js/app.js):
 /// - The page posts {type: 'state', tab: 'closet' | 'mix' | 'looks' | 'more', bar: true | false}
@@ -21,8 +21,11 @@ final class AppViewController: UIViewController, UITabBarDelegate, WKScriptMessa
     /// paint knows --native-bar (it is in the document-start script).
     var onReady: (() -> Void)?
 
-    /// The tabs, in order: the page's tab name, which is also the closetAction that opens it.
+    /// The tabs: the page's tab name, which is also the closetAction that opens it. A tab bar item's tag is
+    /// its index here. The bar shows them as Closet, Mix, (the +), Looks, More.
     private static let tabNames = ["closet", "mix", "looks", "more"]
+    /// The tag of the empty, disabled item in the middle of the bar that the + sits on.
+    private static let plusSlotTag = 99
 
     private let contentController: WKUserContentController
     private let chrome = PassThroughView()        // the tab bar and the +, shown and hidden together
@@ -87,9 +90,14 @@ final class AppViewController: UIViewController, UITabBarDelegate, WKScriptMessa
 
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.delegate = self
+        // The middle item holds the place of the +, which is drawn over it: never selected, never read out.
+        let plusSlot = UITabBarItem(title: nil, image: nil, tag: Self.plusSlotTag)
+        plusSlot.isEnabled = false
+        plusSlot.isAccessibilityElement = false
         tabBar.items = [
             UITabBarItem(title: "Closet", image: UIImage(systemName: "hanger") ?? UIImage(systemName: "tshirt"), tag: 0), // hanger: iOS 17+
             UITabBarItem(title: "Mix", image: UIImage(systemName: "arrow.left.arrow.right"), tag: 1),
+            plusSlot,
             UITabBarItem(title: "Looks", image: UIImage(systemName: "square.grid.2x2"), tag: 2),
             UITabBarItem(tabBarSystemItem: .more, tag: 3),   // the system's own "More", localized
         ]
@@ -135,7 +143,7 @@ final class AppViewController: UIViewController, UITabBarDelegate, WKScriptMessa
         chrome.addSubview(tabBar)
         chrome.addSubview(plusButton)
 
-        // Tabs and + share a row: the full width on iPhone, at most 560 points, centred, on iPad.
+        // The bar takes the full width on iPhone, at most 560 points, centred, on iPad.
         let row = UILayoutGuide()
         chrome.addLayoutGuide(row)
         let rowFullWidth = row.widthAnchor.constraint(equalTo: chrome.widthAnchor)
@@ -145,12 +153,10 @@ final class AppViewController: UIViewController, UITabBarDelegate, WKScriptMessa
         let chromeTop = chrome.topAnchor.constraint(equalTo: tabBar.topAnchor)
         chromeTop.priority = UILayoutPriority(100)
 
-        // iOS 26: a round glass + beside the floating glass bar, like the separate search button in
-        // Apple's apps. Earlier: plus.circle.fill at the trailing end of the classic bar.
-        // The iOS 26 bar draws its glass capsule inset inside its own frame, at a size this code cannot
-        // read, so these numbers were chosen without a device: check the + lines up on iOS 26.
-        let plusSize = glass ? CGSize(width: 56, height: 56) : CGSize(width: 56, height: 48)
-        let plusMargin: CGFloat = glass ? 20 : 8
+        // The + sits on the bar's middle item: a round sage glass button on iOS 26, plus.circle.fill before.
+        // The items share the bar's width equally, so the middle one is at the bar's centre. The size was
+        // chosen without a device: check it sits well inside the iOS 26 glass capsule.
+        let plusSize = glass ? CGSize(width: 50, height: 50) : CGSize(width: 56, height: 48)
 
         NSLayoutConstraint.activate([
             chrome.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -170,11 +176,11 @@ final class AppViewController: UIViewController, UITabBarDelegate, WKScriptMessa
             // cover the home indicator area too.
             tabBar.bottomAnchor.constraint(equalTo: chrome.bottomAnchor),
             tabBar.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            tabBar.trailingAnchor.constraint(equalTo: plusButton.leadingAnchor),
+            tabBar.trailingAnchor.constraint(equalTo: row.trailingAnchor),
             // A safety net: never less than the classic 49 points above the home indicator.
             tabBar.topAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -49),
 
-            plusButton.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -plusMargin),
+            plusButton.centerXAnchor.constraint(equalTo: tabBar.centerXAnchor),
             // Centred on the part of the bar above the home indicator, where the tabs are.
             plusButton.centerYAnchor.constraint(equalTo: tabBar.safeAreaLayoutGuide.centerYAnchor),
             plusButton.widthAnchor.constraint(equalToConstant: plusSize.width),
@@ -304,7 +310,8 @@ final class AppViewController: UIViewController, UITabBarDelegate, WKScriptMessa
     }
 
     private func select(_ name: String) {
-        guard let index = Self.tabNames.firstIndex(of: name), let item = tabBar.items?[index],
+        // by tag: the + slot in the middle means a tab's place in the bar is not its index in tabNames
+        guard let index = Self.tabNames.firstIndex(of: name), let item = tabBar.items?.first(where: { $0.tag == index }),
               tabBar.selectedItem !== item else { return }
         tabBar.selectedItem = item   // no delegate call, so no closetAction
     }
