@@ -2926,29 +2926,41 @@ export function computeMask(img, tolerance = DEFAULT_TOLERANCE, seeds = []) {
   }
   if (!mask) mask = finish(img, S, fg, P);
 
-  // user-tapped erase seeds (e.g. the hole in a bag handle, a leftover patch): remove the connected
-  // region whose colour is like the tapped pixel, following soft gradients along the way
+  // user taps, in the order they were made. [x, y] removes: the connected region whose colour is like the
+  // tapped pixel (the hole in a bag handle, a leftover patch), following soft gradients along the way.
+  // [x, y, 1] adds back: the same kind of region, but only among removed pixels and only near the tap,
+  // so a part of the piece that was cut away by mistake comes back without the background beside it.
   if (seeds && seeds.length) {
-    const queue = new Int32Array(n), gone = new Uint8Array(n), tol = P.seedTol;
-    for (const [sx, sy] of seeds) {
+    const queue = new Int32Array(n), seen = new Uint8Array(n), added = new Uint8Array(n), tol = P.seedTol;
+    let any = false;
+    for (const [sx, sy, back] of seeds) {
       const x0 = Math.min(w - 1, Math.max(0, Math.round(sx * w)));
       const y0 = Math.min(h - 1, Math.max(0, Math.round(sy * h)));
       const s = y0 * w + x0, r = data[s * 4], g = data[s * 4 + 1], b = data[s * 4 + 2];
+      const R = Math.round(Math.max(w, h) * 0.14), R2 = R * R, t = back ? tol * 0.8 : tol;
+      seen.fill(0);
       let qh = 0, qt = 0;
-      if (!gone[s]) { gone[s] = 1; queue[qt++] = s; }
+      if (back ? !mask[s] : true) { seen[s] = 1; queue[qt++] = s; }
       while (qh < qt) {
         const p = queue[qh++], x = p % w, pi = p * 4;
         for (let k = 0; k < 4; k++) {
           const q = k === 0 ? p - 1 : k === 1 ? p + 1 : k === 2 ? p - w : p + w;
           if (k === 0 ? x === 0 : k === 1 ? x === w - 1 : (q < 0 || q >= n)) continue;
-          if (gone[q]) continue;
+          if (seen[q]) continue;
+          if (back) {
+            if (mask[q]) continue;
+            const qx = q % w, qy = (q - qx) / w;
+            if ((qx - x0) * (qx - x0) + (qy - y0) * (qy - y0) > R2) continue;
+          }
           const dGlobal = dist(data, q * 4, r, g, b);
-          if (dGlobal < tol || (dGlobal < tol * 1.6 && dist(data, q * 4, data[pi], data[pi + 1], data[pi + 2]) < tol * 0.18)) { gone[q] = 1; queue[qt++] = q; }
+          if (dGlobal < t || (dGlobal < t * 1.6 && dist(data, q * 4, data[pi], data[pi + 1], data[pi + 2]) < t * 0.18)) { seen[q] = 1; queue[qt++] = q; }
         }
       }
+      for (let i = 0; i < qt; i++) { const p = queue[i]; mask[p] = back ? 1 : 0; added[p] = back ? 1 : 0; }
+      if (!back) any = true;
     }
-    for (let p = 0; p < n; p++) if (gone[p]) mask[p] = 0;
-    dropSmall(mask, w, h, 1, 0, 0.04);
+    if (any) dropSmall(mask, w, h, 1, 0, 0.04);
+    for (let p = 0; p < n; p++) if (added[p]) mask[p] = 1; // what was added back stays, even apart from the rest
   }
   return mask;
 }
@@ -2982,6 +2994,54 @@ function distanceOutside(mask, w, h) {
   return d;
 }
 
+/**
+ * Shave `s` px off the cut edge, where a sliver of the old background tends to cling. Only the edge of the
+ * body of the piece is shaved: thin parts (a strap, a lace, a chain, a cuff) would come apart, so they are
+ * kept whole. "Body" = what is left after rounding the piece off at a radius a little over twice the shave.
+ */
+function shaveEdge(m, W, H, s) {
+  const inv = new Uint8Array(W * H);
+  for (let p = 0; p < inv.length; p++) inv[p] = m[p] ? 0 : 1;
+  const dIn = distanceOutside(inv, W, H); // how deep inside the piece each pixel is
+  const T = 2 * s + 1;
+  const core = new Uint8Array(W * H);
+  for (let p = 0; p < core.length; p++) core[p] = dIn[p] > T ? 1 : 0;
+  const nearCore = distanceOutside(core, W, H);
+  const out = new Uint8Array(W * H);
+  for (let p = 0; p < out.length; p++) if (m[p]) out[p] = dIn[p] <= s && nearCore[p] <= T + 1.5 ? 0 : 1;
+  return out;
+}
+
+/**
+ * Edge pixels mix the piece with the old background. Their colour is taken from just inside instead,
+ * so no line of wall, sheet or floor shows between the piece and its outline. `col` is RGB per pixel.
+ */
+function cleanEdgeColors(m, col, W, H) {
+  const inv = new Uint8Array(W * H);
+  for (let p = 0; p < inv.length; p++) inv[p] = m[p] ? 0 : 1;
+  const d = distanceOutside(inv, W, H);
+  // the second ring first, half way; then the outer ring, which can lean on the cleaned second ring
+  for (const [lo, hi, keep] of [[1.5, 2.5, 0.5], [0, 1.5, 0.15]]) {
+    const fix = [];
+    for (let y = 2; y < H - 2; y++) for (let x = 2; x < W - 2; x++) {
+      const p = y * W + x;
+      if (!m[p] || d[p] <= lo || d[p] > hi) continue;
+      let r = 0, g = 0, b = 0, k = 0;
+      for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) {
+        const q = p + j * W + i;
+        if (m[q] && d[q] >= d[p] + 0.9) { r += col[q * 3]; g += col[q * 3 + 1]; b += col[q * 3 + 2]; k++; }
+      }
+      if (k) fix.push(p, r / k, g / k, b / k);
+    }
+    for (let i = 0; i < fix.length; i += 4) {
+      const o = fix[i] * 3;
+      col[o] = col[o] * keep + fix[i + 1] * (1 - keep);
+      col[o + 1] = col[o + 1] * keep + fix[i + 2] * (1 - keep);
+      col[o + 2] = col[o + 2] * keep + fix[i + 3] * (1 - keep);
+    }
+  }
+}
+
 /** Edge colour of the sticker variant shown on dark backgrounds (the default edge is white). */
 export const EDGE_DARK = [78, 72, 65];
 
@@ -2990,7 +3050,7 @@ export const EDGE_DARK = [78, 72, 65];
  * Returns { dataURL, darkURL, colors, width, height }: `dataURL` has the white border, `darkURL` the same
  * sticker with the soft dark border used on dark backgrounds (null when `dark` is false).
  */
-export function renderSticker(img, mask, { border = 0.022, removeBg = true, dark = true } = {}) {
+export function renderSticker(img, mask, { border = 0.022, removeBg = true, dark = true, shave = null } = {}) {
   const { data, width: w, height: h } = img;
   if (!removeBg) mask = new Uint8Array(w * h).fill(1);
 
@@ -3007,8 +3067,24 @@ export function renderSticker(img, mask, { border = 0.022, removeBg = true, dark
   const W = bw + pad * 2, H = bh + pad * 2;
 
   // local mask in padded space
-  const m = new Uint8Array(W * H);
+  let m = new Uint8Array(W * H);
   for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) m[(y + pad) * W + x + pad] = mask[(y + y0) * w + x + x0];
+  // the piece's colours, per pixel; the cut edge is shaved a pixel or two and its colours come from inside
+  const col = new Uint8ClampedArray(W * H * 3);
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+    const p = (y + pad) * W + x + pad, si = ((y + y0) * w + x + x0) * 4;
+    col[p * 3] = data[si]; col[p * 3 + 1] = data[si + 1]; col[p * 3 + 2] = data[si + 2];
+  }
+  if (removeBg) {
+    const sv = shave ?? Math.max(1, Math.min(3, Math.round(Math.max(bw, bh) * 0.0018)));
+    if (sv > 0) {
+      const shaved = shaveEdge(m, W, H, sv);
+      let left = 0;
+      for (let p = 0; p < shaved.length; p++) left += shaved[p];
+      if (left > 50) m = shaved; // never shave a tiny piece away
+    }
+    cleanEdgeColors(m, col, W, H);
+  }
 
   // smooth the item edge with a tiny blur of the mask (anti-aliasing)
   const soft = new Float32Array(W * H);
@@ -3032,10 +3108,10 @@ export function renderSticker(img, mask, { border = 0.022, removeBg = true, dark
 
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const p = y * W + x, o = p * 4;
-    const sx = x - pad + x0, sy = y - pad + y0;
-    if (sx >= 0 && sy >= 0 && sx < w && sy < h && soft[p] > 0) {
-      const si = (sy * w + sx) * 4;
-      id[o] = data[si]; id[o + 1] = data[si + 1]; id[o + 2] = data[si + 2];
+    if (soft[p] > 0) {
+      // the soft rim just outside the piece takes the colour of the piece beside it, not of the old background
+      const q = m[p] ? p : m[p - 1] ? p - 1 : m[p + 1] ? p + 1 : m[p - W] ? p - W : p + W;
+      id[o] = col[q * 3]; id[o + 1] = col[q * 3 + 1]; id[o + 2] = col[q * 3 + 2];
       id[o + 3] = Math.round(255 * Math.min(1, soft[p] * 1.15));
     }
     // smooth antialiased border edge
@@ -3071,8 +3147,8 @@ export function renderSticker(img, mask, { border = 0.022, removeBg = true, dark
   };
 }
 
-/** Quick preview with background tinted, for the tolerance UI. */
-export function renderMaskPreview(img, mask) {
+/** Quick preview for tapping: what is kept, and (with `ghost`, 0..1) a faint trace of what was removed. */
+export function renderMaskPreview(img, mask, { ghost = 0 } = {}) {
   const { data, width: w, height: h } = img;
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const ctx = c.getContext('2d');
@@ -3081,6 +3157,7 @@ export function renderMaskPreview(img, mask) {
   for (let p = 0; p < w * h; p++) {
     const o = p * 4;
     if (mask[p]) { d[o] = data[o]; d[o + 1] = data[o + 1]; d[o + 2] = data[o + 2]; d[o + 3] = 255; }
+    else if (ghost) { d[o] = data[o]; d[o + 1] = data[o + 1]; d[o + 2] = data[o + 2]; d[o + 3] = Math.round(255 * ghost); }
     else { d[o] = 0; d[o + 1] = 0; d[o + 2] = 0; d[o + 3] = 0; }
   }
   ctx.putImageData(out, 0, 0);

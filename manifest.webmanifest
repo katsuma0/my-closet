@@ -61,8 +61,8 @@
       ]
     },
     {
-      "name": "Stats",
-      "url": "./#action=stats",
+      "name": "More",
+      "url": "./#action=more",
       "icons": [
         {
           "src": "icons/icon-192.png",

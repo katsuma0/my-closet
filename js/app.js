@@ -45,6 +45,8 @@ const ICON = {
   share: '<path d="M12 15V4M8 8l4-4 4 4M6 12v7h12v-7"/>',
   swap: '<path d="M7 7h11l-3-3M17 17H6l3 3"/>',
   minus: '<path d="M6 12h12"/>',
+  select: '<circle cx="12" cy="12" r="8"/><path d="m8.5 12.2 2.4 2.4 4.6-4.8"/>',
+  tag: '<path d="M4 12.5V5h7.5l8 8-7.5 7.5zM8 9h.01"/>',
   filter: '<path d="M4 7h16M7 12h10M10 17h4"/>',
   chev: '<path d="m6 9 6 6 6-6"/>',
   drop: '<path d="M12 3.5c3 3.6 5.5 6.6 5.5 10a5.5 5.5 0 0 1-11 0c0-3.4 2.5-6.4 5.5-10z"/>',
@@ -55,6 +57,9 @@ const ICON = {
   swatch: '<circle cx="12" cy="12" r="8"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   upload: '<path d="M12 20V9M7 14l5-5 5 5M5 4h14"/>',
+  grip: '<path d="M5 8h14M5 12h14M5 16h14"/>',
+  brush: '<path d="M18.6 3.4a2 2 0 0 1 2.9 2.9L12.5 15.3 9.6 12.4zM9.6 12.4l-2.2.4a3 3 0 0 0-2.4 2.4L4 20l4.8-1a3 3 0 0 0 2.4-2.4l.4-2.2"/>',
+  zoom: '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5M8.5 11h5"/>',
   sparkle: '<path d="M12 3c.6 4.4 2.6 6.4 7 7-4.4.6-6.4 2.6-7 7-.6-4.4-2.6-6.4-7-7 4.4-.6 6.4-2.6 7-7z"/>',
 };
 const svg = (name, extra = '') => `<svg viewBox="0 0 24 24" ${extra}>${ICON[name] || ''}</svg>`;
@@ -70,10 +75,11 @@ const state = {
 
 /* Appearance choices. Kept in localStorage so index.html can apply them before first paint. */
 const PREFS_KEY = 'closet.prefs';
-const prefs = { theme: 'system' };
+const prefs = { theme: 'system', tint: false }; // tint: each item's card (and each new look's board) takes a soft colour from it
 try {
   const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
   if (['system', 'light', 'dark'].includes(saved.theme)) prefs.theme = saved.theme;
+  prefs.tint = !!saved.tint;
 } catch { /* private mode: defaults */ }
 const isDark = () => prefs.theme === 'dark' || (prefs.theme === 'system' && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
 function applyPrefs(save = true) {
@@ -81,7 +87,10 @@ function applyPrefs(save = true) {
   if (prefs.theme === 'system') r.removeAttribute('data-theme'); else r.dataset.theme = prefs.theme;
   r.removeAttribute('data-contrast'); // an option that no longer exists
   document.querySelector('meta[name=theme-color]')?.setAttribute('content', isDark() ? '#1b1917' : '#f6f3ee');
-  if (save) { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* not stored, still applied */ } }
+  if (save) {
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* not stored, still applied */ }
+    render();
+  }
 }
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -206,13 +215,15 @@ function layoutLook(list, ratio = 1.5) {
   const main = ['top', 'bottom', 'shoes'].filter((k) => by[k].length);
   // each Arrange picks a way of laying things out (never the same twice running): a straight column, a zigzag
   // down the board, or a lean to one side; then every piece gets its own nudge, tilt and a little size change
-  let style = Math.floor(Math.random() * 3);
-  if (style === lastStyle) style = (style + 1 + Math.floor(Math.random() * 2)) % 3;
+  // styles: 0 a column, 1 a zigzag, 2 a lean to one side, 3 a loose scatter
+  let style = Math.floor(Math.random() * 4);
+  if (style === lastStyle) style = (style + 1 + Math.floor(Math.random() * 3)) % 4;
   lastStyle = style;
   const flipSide = Math.random() < 0.5 ? -1 : 1;
-  const swing = 0.07 + Math.random() * 0.05;
-  const shift = (b, nb) => (style === 1 ? (b % 2 ? 1 : -1) * swing * flipSide : style === 2 ? (b - (nb - 1) / 2) * swing * 1.3 * flipSide : 0);
-  const grow = () => 0.9 + Math.random() * 0.18;
+  const swing = 0.09 + Math.random() * 0.07;
+  const shift = (b, nb) => (style === 1 ? (b % 2 ? 1 : -1) * swing * flipSide : style === 2 ? (b - (nb - 1) / 2) * swing * 1.4 * flipSide : style === 3 ? jit(0.16) : 0);
+  const loose = style === 3 ? 1.6 : 1; // the scatter tilts and nudges more
+  const grow = () => 0.86 + Math.random() * 0.26;
   // keeps a piece of width w on the board, with a small margin
   const inside = (x, w) => Math.max(0.03 + w / 2, Math.min(0.97 - w / 2, x));
   const hasAcc = by.acc.length > 0;
@@ -241,9 +252,10 @@ function layoutLook(list, ratio = 1.5) {
       const wide = kind(i) === 'outer' ? base.top * 1.06 : base[k];
       // as wide as its kind usually is, but never so tall that it leaves its band by much, nor wider than its share of the row
       const w = Math.max(0.15, Math.min(0.6, Math.min(wide * (hasAcc ? 0.92 : 1), n > 1 ? room * 1.22 : 1, band * (k === 'bottom' ? 1.3 : 1.12) * ratio / ar) * grow()));
+      // tilts never go past what still reads as laid out by hand
       const x0 = n === 1 ? (left + right) / 2 : left + room * (j + 0.5);
-      const x = inside(x0 + dx + jit(n > 1 ? 0.03 : 0.05), w);
-      at[i] = { x, y: cy + (n > 1 ? (j % 2 ? 0.022 : -0.022) : 0) + jit(0.022), w, rot: jit(k === 'shoes' ? 14 : 9) };
+      const x = inside(x0 + dx + jit((n > 1 ? 0.035 : 0.06) * loose), w);
+      at[i] = { x, y: cy + (n > 1 ? (j % 2 ? 0.026 : -0.026) : 0) + jit(0.028 * loose), w, rot: jit((k === 'shoes' ? 16 : 11) * loose) };
     });
   });
   // accessories: alternate sides, top to bottom, clear of the foot of the board when shoes are there
@@ -254,7 +266,7 @@ function layoutLook(list, ratio = 1.5) {
   by.acc.forEach((i, j) => {
     const [side0, sy] = slots[(start + j) % slots.length], side = mirror ? 1 - side0 : side0, lap = Math.floor(j / slots.length);
     const w = Math.min(by.acc.length <= 2 ? 0.25 : 0.21, 0.2 * ratio / (list[i].ar || AR.acc)) * grow();
-    at[i] = { x: inside((side ? 0.86 : 0.14) + (side ? -1 : 1) * lap * 0.08 + jit(0.03), w), y: Math.max(0.08, Math.min(0.92, sy + lap * 0.06 + jit(0.04))), w, rot: jit(16) };
+    at[i] = { x: inside((side ? 0.86 : 0.14) + (side ? -1 : 1) * lap * 0.08 + jit(0.035 * loose), w), y: Math.max(0.08, Math.min(0.92, sy + lap * 0.06 + jit(0.05 * loose))), w, rot: jit(18 * loose) };
   });
   return { at, order: [...by.bottom, ...by.top, ...by.shoes, ...by.acc] }; // by.top already ends with the outerwear
 }
@@ -333,6 +345,14 @@ function tintedSticker(it, hex) {
     if (tinted.size > 400) tinted.delete(tinted.keys().next().value);
   }
   return tinted.get(key);
+}
+/** A soft background for one item's card, from its main colour (for "Colour backgrounds"). */
+function tileTint(it, dark = isDark()) {
+  const col = it?.colors?.[0];
+  if (!col) return null;
+  const [hh, ss, ll] = hexToHsl(col);
+  if (ss < 14 || ll < 12 || ll > 92) return dark ? '#2b2724' : '#efe9e1'; // neutrals: a warm neutral
+  return dark ? hslHex(hh, Math.min(ss, 24), 19) : hslHex(hh, Math.min(ss, 40), 90);
 }
 /** Which outline a piece wears on a look: tinted to the piece when the look's background is automatic, else white or soft dark. */
 const edgeOf = (o, it) => (o.auto ? edgeFor(it, o.board) : darkBoard(o.board));
@@ -450,7 +470,7 @@ function sheet(content, { full = false, onClose } = {}) {
       if (t0 && t0.on) return; // a second finger must not strand a drag that is under way
       t0 = null;
       // not from the strength slider, and not from the photo while it is being tapped to erase
-      if (closed || e.touches.length !== 1 || e.target.closest('input[type=range], .slider-row, .stage.erasing')) return;
+      if (closed || e.touches.length !== 1 || e.target.closest('input[type=range], .slider-row, .stage.erasing, .grip')) return;
       const t = e.touches[0];
       t0 = { x: t.clientX, y: t.clientY, on: false, d: 0, v: 0, lastY: t.clientY, lastT: performance.now(), t: performance.now(), ts0: e.timeStamp, ts1: e.timeStamp };
     }, { passive: true });
@@ -511,7 +531,15 @@ function sheet(content, { full = false, onClose } = {}) {
   return api;
 }
 
+// inside the iOS app a native tab bar replaces the web one; the page tells it which tab shows and when to step aside
+const nativeChrome = () => window.webkit?.messageHandlers?.chrome;
+const TAB_OF = { closet: 'closet', mix: 'mix', outfits: 'looks', more: 'more' };
+function postChrome() {
+  try { nativeChrome()?.postMessage({ type: 'state', tab: TAB_OF[state.view] || 'closet', bar: !(stack.length || menuOpen || sel.on) }); } catch { /* not in the app */ }
+  document.body.classList.toggle('choosing', sel.on);
+}
 function syncTabbar() {
+  postChrome();
   $('#tabbar').classList.toggle('hidden', stack.some((s) => s.el.classList.contains('full')));
   // only the sheet on top (or an open menu) can be reached, by touch, keyboard or screen reader
   $('#app').inert = stack.length > 0 || menuOpen;
@@ -635,6 +663,7 @@ function setView(v) {
   title.classList.add('swap');
   setTimeout(() => { title.textContent = $('#view-' + v).dataset.title; title.classList.remove('swap'); }, 200);
   render();
+  postChrome();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -650,11 +679,22 @@ function moveTabInd() {
   ind.style.transform = `translateX(${act.offsetLeft}px)`;
 }
 
+/** The header's right side: "Select" on the closet page (and "Done" while choosing). */
+function syncSelectTitle() {
+  const btn = $('#select-btn');
+  if (!btn) return;
+  const show = state.view === 'closet' && state.items.length > 0;
+  btn.hidden = !show;
+  btn.textContent = sel.on ? 'Done' : 'Select';
+  if (state.view === 'closet') $('#view-title').textContent = sel.on ? (sel.ids.size ? `${sel.ids.size} chosen` : 'Choose items') : 'My closet';
+}
 function render() {
+  if (state.view !== 'closet' && sel.on) { sel.on = false; sel.ids.clear(); $('#select-bar')?.remove(); }
+  syncSelectTitle();
   if (state.view === 'closet') renderCloset();
   if (state.view === 'mix') renderMix();
   if (state.view === 'outfits') renderOutfits();
-  if (state.view === 'stats') renderStats();
+  if (state.view === 'more') renderMore();
 }
 
 /* ------------------------------------------------------------------ closet view */
@@ -663,7 +703,7 @@ function render() {
 const SINGULAR = { Blazers: 'blazer', Puffers: 'puffer', Vests: 'vest', Raincoats: 'raincoat', 'T-shirts': 't-shirt', Shirts: 'shirt', Blouses: 'blouse', Knits: 'knit', Hoodies: 'hoodie', Tanks: 'tank', Jackets: 'jacket', Coats: 'coat', Dresses: 'dress', Skirts: 'skirt', Bags: 'bag', Hats: 'hat', Belts: 'belt', Scarves: 'scarf', Watches: 'watch' };
 const CAT_NOUN = { top: 'top', outer: 'jacket', bottom: 'bottoms', shoes: 'shoes', acc: 'accessory' };
 function autoName(colors, cat, sub) {
-  const noun = sub ? (SINGULAR[sub] || sub.toLowerCase()) : (CAT_NOUN[cat] || 'piece');
+  const noun = sub ? (SINGULAR[sub] || sub.toLowerCase()) : (CAT_NOUN[cat] || 'item');
   const n = `${colors?.[0] ? colorName(colors[0]) + ' ' : ''}${noun}`;
   return n.charAt(0).toUpperCase() + n.slice(1);
 }
@@ -700,7 +740,7 @@ function renderCloset() {
   if (!state.items.length) {
     resetClosetFilters();
     const e = h(`<div class="empty start"><h3>Start your closet</h3>
-      <p>Lay each piece flat on a plain, light surface and take its photo. Choose many photos at once to add them together.</p>
+      <p>Lay each item flat, or hang it, against a plain background and take its photo. Choose many photos at once to add them together.</p>
       <div class="pick-btns">
         <button class="btn" data-a="cam">${svg('camera')}<span>Take photo</span></button>
         <button class="btn soft" data-a="lib">${svg('image')}<span>Choose photos</span></button>
@@ -714,6 +754,7 @@ function renderCloset() {
   // search, favourites, sort and filter
   const families = () => FAMILIES.map(([f]) => f).filter((f) => state.items.some((i) => family(mainColors(i)[0]) === f));
   root.append(toolbar('closet', 'Search your closet', () => drawGrid(), families));
+  if (sel.on) selectBar(); else $('#select-bar')?.remove();
 
   // categories
   const chips = h('<div class="chips nav"></div>');
@@ -755,19 +796,28 @@ function renderCloset() {
       .filter((i) => !state.filterSub || i.sub === state.filterSub)
       .filter((i) => matches(itemWords(i), q)), 'closet', mainColors, (i) => i.created);
     if (!items.length) {
-      const why = view.closet.fav && !state.items.some((i) => i.fav) ? 'No favourites yet' : q || filtered('closet') ? 'Nothing matches' : 'No pieces here yet';
+      const why = view.closet.fav && !state.items.some((i) => i.fav) ? 'No favourites yet' : q || filtered('closet') ? 'Nothing matches' : 'No items here yet';
       host.append(h(`<div class="empty"><p>${why}</p></div>`));
       return;
     }
     const grid = h('<div class="grid"></div>');
     items.forEach((it, idx) => {
-      const card = h(`<div class="piece ${inWash(it) ? 'wash' : ''}" data-id="${it.id}" style="animation-delay:${Math.min(idx, 12) * 35}ms">
-        <button class="piece-open"><span class="tile"><img class="sticker" src="${stickerOf(it)}" data-st="${it.id}" alt="" loading="lazy" /></span>
+      const card = h(`<div class="piece ${inWash(it) ? 'wash' : ''}" data-id="${it.id}" style="animation-delay:${Math.min(idx, 12) * 35}ms;--d:${[1, -0.8, 0.6, -1.1, 0.9, -0.7][idx % 6]}">
+        <button class="piece-open"><span class="tile"${prefs.tint ? ` style="background:${tileTint(it)}"` : ''}><img class="sticker" src="${stickerOf(it)}" data-st="${it.id}" alt="" loading="lazy" /></span>
         <span class="meta"><span class="name">${esc(it.name)}</span><span class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>
         ${heartBtn(it)}</div>`);
       const open = $('.piece-open', card);
       if (inWash(it)) open.setAttribute('aria-label', `${it.name}, in the wash`);
-      press(open, { tap: () => openDetail(it), long: (e) => itemMenu(it, card, e) });
+      if (sel.on) {
+        card.classList.add('choosing'); card.classList.toggle('chosen', sel.ids.has(it.id));
+        open.setAttribute('aria-pressed', String(sel.ids.has(it.id)));
+        card.append(h(`<span class="tick-mark" aria-hidden="true">${svg('check')}</span>`));
+        press(open, { tap: () => {
+          if (sel.ids.has(it.id)) sel.ids.delete(it.id); else sel.ids.add(it.id);
+          card.classList.toggle('chosen', sel.ids.has(it.id)); open.setAttribute('aria-pressed', String(sel.ids.has(it.id)));
+          selectBar(); syncSelectTitle();
+        }, hapticTap: 'select' });
+      } else press(open, { tap: () => openDetail(it), long: (e) => itemMenu(it, card, e) });
       bindHeart($('.heart', card), it, 'items', () => { if (view.closet.fav) drawGrid(); });
       grid.append(card);
     });
@@ -826,14 +876,14 @@ const SORTS = {
   outfits: [['new', 'Newest'], ['old', 'Oldest'], ['most', 'Most worn'], ['least', 'Least worn'], ['colour', 'Colour'], ['name', 'Name']],
 };
 const WORN = [['any', 'Any'], ['lately', 'Not lately'], ['never', 'Never']];
-const view = { closet: { sort: 'new', colours: [], worn: 'any', fav: false }, outfits: { sort: 'new', colours: [], worn: 'any', fav: false } };
+const view = { closet: { sort: 'new', colours: [], worn: 'any', fav: false, brands: [] }, outfits: { sort: 'new', colours: [], worn: 'any', fav: false, brands: [] } };
 try {
   const saved = JSON.parse(localStorage.getItem('closet.sort') || '{}');
   for (const k of ['closet', 'outfits']) if (SORTS[k].some(([v]) => v === saved[k])) view[k].sort = saved[k];
 } catch { /* newest first */ }
-const filtered = (k) => view[k].fav || view[k].colours.length || view[k].worn !== 'any';
+const filtered = (k) => view[k].fav || view[k].colours.length || view[k].brands.length || view[k].worn !== 'any';
 const changed = (k) => filtered(k) || view[k].sort !== 'new';
-function resetView(k) { Object.assign(view[k], { colours: [], worn: 'any', fav: false }); }
+function resetView(k) { Object.assign(view[k], { colours: [], worn: 'any', fav: false, brands: [] }); }
 
 /** Applies a page's favourites, colour and worn filters and its sort. `cols(x)` gives a thing's colours, `created(x)` its date. */
 function sortFilter(list, k, cols, created) {
@@ -841,6 +891,7 @@ function sortFilter(list, k, cols, created) {
   let out = list;
   if (v.fav) out = out.filter((x) => x.fav);
   if (v.colours.length) out = out.filter((x) => cols(x).some((c) => v.colours.includes(family(c))));
+  if (v.brands.length) out = out.filter((x) => x.brand && v.brands.some((b) => b.toLowerCase() === x.brand.toLowerCase()));
   if (v.worn === 'never') out = out.filter((x) => !wears(x));
   if (v.worn === 'lately') out = out.filter((x) => now - lastWear(x) > 30 * DAY_MS);
   const by = {
@@ -883,6 +934,8 @@ function openFilters(k, families, onChange) {
       ${SORTS[k].map(([val, l]) => `<button class="chip small" data-v="${val}">${l}</button>`).join('')}</div></div>
     ${families.length > 1 ? `<div class="field"><label id="flt-col">Colour</label><div class="wrap-chips" role="group" aria-labelledby="flt-col" data-col>
       ${families.map((f) => `<button class="chip small col" data-v="${f}"><i style="background:${FAMILIES[FAMILY_AT[f]][1]}"></i>${f}</button>`).join('')}</div></div>` : ''}
+    ${k === 'closet' && brandList().length ? `<div class="field"><label id="flt-brand">Brand</label><div class="wrap-chips" role="group" aria-labelledby="flt-brand" data-brands>
+      ${brandList().map((b) => `<button class="chip small" data-v="${esc(b)}">${esc(b)}</button>`).join('')}</div></div>` : ''}
     <div class="field"><label id="flt-worn">Worn</label><div class="wrap-chips" role="group" aria-labelledby="flt-worn" data-worn>
       ${WORN.map(([val, l]) => `<button class="chip small" data-v="${val}">${l}</button>`).join('')}</div></div>
     <div class="row-btns"><button class="btn soft" data-a="reset">Reset</button><button class="btn" data-a="done">Done</button></div>
@@ -892,6 +945,7 @@ function openFilters(k, families, onChange) {
     $$('[data-sort] button', c).forEach((b) => { const on = b.dataset.v === v.sort; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
     $$('[data-col] button', c).forEach((b) => { const on = v.colours.includes(b.dataset.v); b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
     $$('[data-worn] button', c).forEach((b) => { const on = b.dataset.v === v.worn; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
+    $$('[data-brands] button', c).forEach((b) => { const on = v.brands.includes(b.dataset.v); b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
   };
   const apply = () => {
     paint(); onChange();
@@ -900,13 +954,149 @@ function openFilters(k, families, onChange) {
   $$('[data-sort] button', c).forEach((b) => press(b, { tap: () => { v.sort = b.dataset.v; apply(); }, hapticTap: 'select' }));
   $$('[data-col] button', c).forEach((b) => press(b, { tap: () => { v.colours = v.colours.includes(b.dataset.v) ? v.colours.filter((x) => x !== b.dataset.v) : [...v.colours, b.dataset.v]; apply(); }, hapticTap: 'select' }));
   $$('[data-worn] button', c).forEach((b) => press(b, { tap: () => { v.worn = b.dataset.v; apply(); }, hapticTap: 'select' }));
+  $$('[data-brands] button', c).forEach((b) => press(b, { tap: () => { v.brands = v.brands.includes(b.dataset.v) ? v.brands.filter((x) => x !== b.dataset.v) : [...v.brands, b.dataset.v]; apply(); }, hapticTap: 'select' }));
   press($('[data-a=reset]', c), { tap: () => { resetView(k); v.sort = 'new'; apply(); }, hapticTap: 'select' });
   press($('[data-a=done]', c), { tap: () => s.close() });
   paint();
 }
 
-// what a piece can be found by: its name, type, category and colours
-const itemWords = (i) => [i.name, i.sub, CATS[i.cat]?.label, ...mainColors(i).map(colorName)].filter(Boolean).join(' ').toLowerCase();
+/* ---------- choosing several items at once ---------- */
+const sel = { on: false, ids: new Set() };
+function startSelect(firstId = null) {
+  sel.on = true; sel.ids = new Set(firstId ? [firstId] : []);
+  haptic('medium');
+  syncSelectTitle(); renderCloset(); postChrome();
+}
+function endSelect() {
+  sel.on = false; sel.ids.clear();
+  $('#select-bar')?.remove();
+  syncSelectTitle(); renderCloset(); postChrome();
+}
+/** The bar at the bottom while choosing: how many, and what can be done to them all. */
+function selectBar() {
+  let bar = $('#select-bar');
+  if (!bar) {
+    bar = h(`<div class="select-bar glass" id="select-bar" role="toolbar" aria-label="Chosen items">
+      <button data-a="s-edit">${svg('edit')}<span>Edit</span></button>
+      <button data-a="s-fav">${svg('heart')}<span>Favourite</span></button>
+      <button data-a="s-wash">${svg('drop')}<span>Wash</span></button>
+      <button data-a="s-del" class="danger">${svg('trash')}<span>Delete</span></button>
+    </div>`);
+    document.body.append(bar);
+    const chosen = () => state.items.filter((i) => sel.ids.has(i.id));
+    const need = (f) => () => { if (!sel.ids.size) { haptic('light'); toast('Choose items first'); return; } f(chosen()); };
+    press($('[data-a=s-edit]', bar), { tap: need((list) => bulkEdit(list)) });
+    press($('[data-a=s-fav]', bar), { tap: need(async (list) => {
+      const on = !list.every((i) => i.fav);
+      for (const it of list) { it.fav = on; await db.put('items', it); }
+      haptic('success'); toast(on ? `${list.length} favourite${list.length === 1 ? '' : 's'}` : 'Favourites removed'); renderCloset();
+    }) });
+    press($('[data-a=s-wash]', bar), { tap: need(async (list) => { const on = !list.every(inWash); await setWash(list, on); toast(on ? 'In the wash' : 'Clean again'); }) });
+    press($('[data-a=s-del]', bar), { tap: need(async (list) => {
+      if (!(await confirmSheet(`Delete ${list.length} item${list.length === 1 ? '' : 's'}?`, ''))) return;
+      for (const it of list) await deleteItem(it, true);
+      endSelect(); toast('Deleted');
+    }) });
+  }
+  bar.classList.toggle('none', !sel.ids.size);
+  return bar;
+}
+/** Change category, type and brand of several items in one go. Leaves what is not changed as it is. */
+function bulkEdit(list) {
+  const ch = { cat: undefined, sub: undefined, brand: undefined };
+  const c = h(`<div><h2>Edit ${list.length} item${list.length === 1 ? '' : 's'}</h2>
+    <div class="field"><label>Category</label><div class="seg" data-cats>${CAT_ORDER.map((k) => `<button data-cat="${k}">${svg(k)}${CATS[k].label}</button>`).join('')}</div></div>
+    <div class="field" data-typef hidden><label>Type</label><div class="wrap-chips" data-subs></div></div>
+    <div data-brand></div>
+    <button class="btn sage block" data-a="apply">Save</button>
+  </div>`);
+  const s = sheet(c);
+  // the category every chosen item already shares, if any
+  const same = list.every((i) => i.cat === list[0].cat) ? list[0].cat : null;
+  const paintCats = () => $$('[data-cat]', c).forEach((b) => b.classList.toggle('active', b.dataset.cat === (ch.cat || same)));
+  const paintSubs = () => {
+    const cat = ch.cat || same, f = $('[data-typef]', c), w = $('[data-subs]', c);
+    f.hidden = !cat; w.innerHTML = '';
+    if (!cat) return;
+    const custom = state.items.filter((i) => i.cat === cat && i.sub && !CATS[cat].subs.includes(i.sub)).map((i) => i.sub);
+    [...new Set([...CATS[cat].subs, ...custom])].forEach((sname) => {
+      const b = h(`<button class="chip small ${ch.sub === sname ? 'active' : ''}">${esc(sname)}</button>`);
+      press(b, { tap: () => { ch.sub = ch.sub === sname ? undefined : sname; paintSubs(); }, hapticTap: 'select' });
+      w.append(b);
+    });
+  };
+  $$('[data-cat]', c).forEach((b) => press(b, { tap: () => { ch.cat = b.dataset.cat; ch.sub = undefined; paintCats(); paintSubs(); }, hapticTap: 'select' }));
+  $('[data-brand]', c).replaceWith(brandField(() => ch.brand, (v) => { ch.brand = v; }, { keepOption: true }));
+  paintCats(); paintSubs();
+  press($('[data-a=apply]', c), { tap: async () => {
+    for (const it of list) {
+      const auto = it.name === autoName(it.colors, it.cat, it.sub); // a name the app made follows the new type
+      if (ch.cat && ch.cat !== it.cat) { it.cat = ch.cat; it.sub = null; }
+      if (ch.sub !== undefined) it.sub = ch.sub;
+      if (ch.brand !== undefined) { if (ch.brand) it.brand = ch.brand; else delete it.brand; }
+      if (auto) it.name = autoName(it.colors, it.cat, it.sub);
+      await db.put('items', it);
+    }
+    haptic('success'); toast(`${list.length} item${list.length === 1 ? '' : 's'} saved`);
+    s.close(); endSelect();
+  }, hapticTap: null });
+}
+
+// what an item can be found by: its name, brand, type, category and colours
+const itemWords = (i) => [i.name, i.brand, i.sub, CATS[i.cat]?.label, ...mainColors(i).map(colorName)].filter(Boolean).join(' ').toLowerCase();
+
+/* ---------- brands: every brand used, plus ones added and not used yet (kept on this device) ---------- */
+const BRANDS_KEY = 'closet.brands';
+function brandList() {
+  let extra = [];
+  try { extra = JSON.parse(localStorage.getItem(BRANDS_KEY) || '[]'); } catch { /* none */ }
+  const all = [...state.items.map((i) => i.brand).filter(Boolean), ...extra];
+  const seen = new Map();
+  for (const b of all) { const k = b.trim().toLowerCase(); if (k && !seen.has(k)) seen.set(k, b.trim()); }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b));
+}
+function rememberBrand(b) {
+  b = (b || '').trim();
+  if (!b) return;
+  try {
+    const extra = JSON.parse(localStorage.getItem(BRANDS_KEY) || '[]');
+    if (!extra.some((x) => x.toLowerCase() === b.toLowerCase())) localStorage.setItem(BRANDS_KEY, JSON.stringify([...extra, b].slice(-300)));
+  } catch { /* still on the item */ }
+}
+/**
+ * A brand picker: the phone's own list of the brands used so far, with "None" and "Add a brand".
+ * `get`/`set` read and write the chosen brand ('' = none, undefined = leave as it is, for editing many at once).
+ */
+function brandField(get, set, { keepOption = false } = {}) {
+  const f = h(`<div class="field"><label for="brand-${++sheetSeq}">Brand</label><div class="select-wrap"><select class="input" id="brand-${sheetSeq}"></select>${svg('chev')}</div>
+    <div class="brand-new" hidden><input class="input" placeholder="Brand name" maxlength="40" autocomplete="off" aria-label="New brand" /><button class="btn sage" type="button">Add</button></div></div>`);
+  const sel = $('select', f), box = $('.brand-new', f), inp = $('input', box);
+  const fill = () => {
+    const cur = get();
+    const list = brandList();
+    if (cur && !list.some((b) => b.toLowerCase() === cur.toLowerCase())) list.push(cur);
+    sel.innerHTML = (keepOption ? '<option value="__keep">Leave as they are</option>' : '')
+      + '<option value="">None</option>'
+      + list.map((b) => `<option value="${esc(b)}">${esc(b)}</option>`).join('')
+      + '<option value="__new">Add a brand…</option>';
+    sel.value = cur === undefined ? '__keep' : (list.find((b) => b.toLowerCase() === (cur || '').toLowerCase()) || '');
+  };
+  fill();
+  sel.addEventListener('change', () => {
+    if (sel.value === '__new') { box.hidden = false; inp.value = ''; setTimeout(() => inp.focus(), 30); return; }
+    box.hidden = true;
+    set(sel.value === '__keep' ? undefined : sel.value);
+    haptic('select');
+  });
+  const add = () => {
+    const v = inp.value.trim();
+    if (!v) { inp.focus(); return; }
+    rememberBrand(v); set(v); box.hidden = true; fill(); haptic('success');
+  };
+  press($('button', box), { tap: add, hapticTap: null });
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+  return f;
+}
 /** Every word typed has to appear somewhere ("black shoes" finds black pieces among the shoes). */
 const matches = (hay, q) => q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
 
@@ -915,8 +1105,8 @@ function itemMenu(it, anchor, e) {
     { icon: 'edit', label: 'Edit', run: () => openAdd({ item: it }) },
     { icon: 'look', label: 'Style a look', run: () => openEditor(null, suggestLook(it.id)) },
     { icon: 'heart', label: it.fav ? 'Remove favourite' : 'Favourite', run: async () => { await toggleFav(it, 'items'); render(); } },
-    { icon: 'check', label: 'Wore today', run: () => logWear([it]) },
     { icon: 'drop', label: inWash(it) ? 'Clean again' : 'In the wash', run: () => setWash([it], !inWash(it)) },
+    { icon: 'select', label: 'Select', run: () => startSelect(it.id) },
     ...(state.items.filter(inWash).length > 1 ? [{ icon: 'sparkle', label: 'All clean', run: () => setWash(state.items.filter(inWash), false, true) }] : []),
     { icon: 'copy', label: 'Duplicate', run: () => duplicateItem(it) },
     { icon: 'trash', label: 'Delete', danger: true, run: () => deleteItem(it) },
@@ -942,9 +1132,9 @@ async function duplicateItem(it) {
   render();
 }
 
-async function deleteItem(it) {
+async function deleteItem(it, asked = false) {
   const used = state.outfits.filter((o) => o.pieces.some((p) => p.itemId === it.id));
-  if (!(await confirmSheet('Delete this piece?', used.length ? `${it.name}. It is in ${used.length} look${used.length === 1 ? '' : 's'}.` : it.name))) return;
+  if (!asked && !(await confirmSheet('Delete this item?', used.length ? `${it.name}. It is in ${used.length} look${used.length === 1 ? '' : 's'}.` : it.name))) return;
   await db.del('items', it.id);
   state.items = state.items.filter((i) => i.id !== it.id);
   forgetImgs(it.id);
@@ -966,14 +1156,14 @@ function openDetail(it) {
   const cols = mainColors(it);
   const inLooks = state.outfits.filter((o) => o.pieces.some((p) => p.itemId === it.id));
   const c = h(`<div>
-    <div class="detail-img"><img src="${stickerOf(it)}" data-st="${it.id}" alt="" />
+    <div class="detail-img${prefs.tint ? ' tinted' : ''}"${prefs.tint ? ` style="background:${tileTint(it)}"` : ''}><img src="${stickerOf(it)}" data-st="${it.id}" alt="" />
       <button class="fav-btn ${it.fav ? 'on' : ''}" data-a="fav" aria-label="Favourite" aria-pressed="${!!it.fav}">${svg('heart')}</button></div>
     <h2>${esc(it.name)}</h2>
-    <div class="detail-meta"><span>${esc(it.sub || CATS[it.cat]?.label || '')}</span><span class="dots">${cols.map((x) => `<i style="background:${x}"></i>`).join('')}</span><span>${cols.map(colorName).join(', ')}</span></div>
+    <div class="detail-meta">${it.brand ? `<span class="brand">${esc(it.brand)}</span>` : ''}<span>${esc(it.sub || CATS[it.cat]?.label || '')}</span><span class="dots">${cols.map((x) => `<i style="background:${x}"></i>`).join('')}</span><span>${cols.map(colorName).join(', ')}</span></div>
     <p class="worn" data-worn></p>
-    ${inLooks.length ? `<div class="in-looks" role="group" aria-label="Looks with this piece">${inLooks.slice(0, 8).map((o) => `<button data-look="${o.id}" aria-label="${esc(o.name)}"><img src="${o.thumb || ''}" alt="" /></button>`).join('')}</div>` : ''}
-    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="wore">Wore today</button><button class="btn" data-a="look">Style</button></div>
-    <div class="row-btns"><button class="btn ghost" data-a="edit">Edit</button><button class="btn ghost" data-a="del">Delete</button></div>
+    ${inLooks.length ? `<div class="in-looks" role="group" aria-label="Looks with this item">${inLooks.slice(0, 8).map((o) => `<button data-look="${o.id}" aria-label="${esc(o.name)}"><img src="${o.thumb || ''}" alt="" /></button>`).join('')}</div>` : ''}
+    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="edit">Edit</button><button class="btn" data-a="look">Style</button></div>
+    <button class="btn ghost block" data-a="del">Delete</button>
   </div>`);
   const s = sheet(c);
   const syncWorn = () => { const w = $('[data-worn]', c); w.textContent = [inWash(it) && 'In the wash', wornText(it)].filter(Boolean).join('. '); w.hidden = !w.textContent; };
@@ -985,7 +1175,6 @@ function openDetail(it) {
     $$(`#views [data-id="${CSS.escape(it.id)}"] .heart`).forEach((b) => b.setAttribute('aria-pressed', String(!!it.fav)));
   }, hapticTap: null });
   $$('[data-look]', c).forEach((b) => press(b, { tap: () => { const o = state.outfits.find((x) => x.id === b.dataset.look); s.close(); if (o) openEditor(o); } }));
-  press($('[data-a=wore]', c), { tap: async () => { await logWear([it]); syncWorn(); }, hapticTap: null });
   // a look built around this piece, ready to adjust
   press($('[data-a=look]', c), { tap: () => { s.close(); openEditor(null, suggestLook(it.id)); } });
   press($('[data-a=edit]', c), { tap: () => { s.close(); openAdd({ item: it }); } });
@@ -996,6 +1185,20 @@ function openDetail(it) {
 
 const TOL_MIN = 6, TOL_MAX = 110;
 const CUT_V = 2; // version of the remover a saved strength belongs to
+
+/** Where a tap in "add back" lands: the tapped spot, if it was removed; or a removed spot right beside it (a nick in the edge). */
+function addTarget(mask, w, h, nx, ny, reach) {
+  const x0 = Math.min(w - 1, Math.max(0, Math.round(nx * w))), y0 = Math.min(h - 1, Math.max(0, Math.round(ny * h)));
+  if (!mask[y0 * w + x0]) return [x0 / w, y0 / h, 1];
+  const r = Math.max(1, reach >> 2);
+  let best = -1, bd = r * r + 1;
+  for (let y = Math.max(0, y0 - r); y <= Math.min(h - 1, y0 + r); y++) for (let x = Math.max(0, x0 - r); x <= Math.min(w - 1, x0 + r); x++) {
+    if (mask[y * w + x]) continue;
+    const d = (x - x0) * (x - x0) + (y - y0) * (y - y0);
+    if (d < bd) { bd = d; best = y * w + x; }
+  }
+  return best < 0 ? null : [(best % w) / w, Math.floor(best / w) / h, 1];
+}
 
 /** Where a tap in "remove more" lands: the tapped spot if something is kept there, else a thin leftover just beside it. */
 function eraseTarget(mask, w, h, nx, ny, reach) {
@@ -1025,41 +1228,74 @@ function eraseTarget(mask, w, h, nx, ny, reach) {
 }
 
 /**
- * The background-remover controls: preview, "remove background" switch, the how-much slider and
- * "tap to remove more" with undo. Used by the one-piece form and by bulk upload.
+ * The background-remover controls: preview, "remove background" switch, the how-much slider, and
+ * "remove more" / "add back" (tap the photo; pinch to zoom in) with undo. Used by the one-item form and by bulk upload.
  * `cut` ({ raster, tolerance, seeds, removeBg, result }) is edited in place. Nothing is re-cut until
  * a control is used, so an existing sticker stays exactly as it was.
  */
 function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
-  let mask = null, erasing = false, timer = null, run = 0;
-  const el = h(`<div><div class="stage"><div class="busy"><div class="spinner"></div></div><span class="stage-hint">Tap what should go</span></div>
+  let mask = null, mode = null, timer = null, run = 0; // mode: 'erase' | 'add' while tapping the photo
+  const el = h(`<div><div class="stage"><div class="busy"><div class="spinner"></div></div><span class="stage-hint">Tap what should go</span><button class="zoom-fit" aria-label="Zoom out" hidden>${svg('zoom')}<span>Fit</span></button></div>
     <div class="cut-tools">
       <button class="chip" data-a="bg" role="switch" aria-checked="${!!cut.removeBg}"><span class="switch ${cut.removeBg ? 'on' : ''}" style="transform:scale(.7);margin:-6px -7px"></span>Remove background</button>
     </div>
     <div class="slider-row" data-a="tol-row"><span>Less</span><input type="range" min="${TOL_MIN}" max="${TOL_MAX}" value="${Math.min(TOL_MAX, Math.max(TOL_MIN, cut.tolerance))}" aria-label="How much background to remove" /><span>More</span></div>
     <div class="cut-more" data-a="more-row">
-      <button class="btn soft" data-a="erase" aria-pressed="false">${svg('eraser')}<span>Tap to remove more</span></button>
-      <button class="btn soft" data-a="undo">${svg('undo')}<span>Undo</span></button>
+      <button class="btn soft" data-a="erase" aria-pressed="false">${svg('eraser')}<span>Remove</span></button>
+      <button class="btn soft" data-a="add" aria-pressed="false">${svg('brush')}<span>Add back</span></button>
+      <button class="btn soft" data-a="undo" aria-label="Undo">${svg('undo')}</button>
     </div></div>`);
   host.innerHTML = '';
   host.append(el);
   extraTools.forEach((t) => $('.cut-tools', el).append(t));
-  const stage = $('.stage', el), bgBtn = $('[data-a=bg]', el), eraseBtn = $('[data-a=erase]', el), range = $('input[type=range]', el);
+  const stage = $('.stage', el), bgBtn = $('[data-a=bg]', el), eraseBtn = $('[data-a=erase]', el), addBtn = $('[data-a=add]', el), range = $('input[type=range]', el);
+  const fitBtn = $('.zoom-fit', el);
 
   function syncTools() {
-    if (!cut.removeBg) erasing = false;
+    if (!cut.removeBg) mode = null;
     $('[data-a=tol-row]', el).style.display = cut.removeBg ? '' : 'none';
     $('[data-a=more-row]', el).style.display = cut.removeBg ? '' : 'none';
     $('[data-a=undo]', el).style.display = cut.seeds.length ? '' : 'none';
-    eraseBtn.classList.toggle('active', erasing);
-    eraseBtn.setAttribute('aria-pressed', String(erasing));
-    $('span', eraseBtn).textContent = erasing ? 'Done removing' : 'Tap to remove more';
+    [[eraseBtn, 'erase', 'Remove'], [addBtn, 'add', 'Add back']].forEach(([b, m, label]) => {
+      b.classList.toggle('active', mode === m);
+      b.setAttribute('aria-pressed', String(mode === m));
+      $('span', b).textContent = mode === m ? 'Done' : label;
+    });
+    $('.stage-hint', el).textContent = mode === 'add' ? 'Tap what should come back' : 'Tap what should go';
+  }
+  // zoom while tapping: pinch (or scroll a mouse wheel) to look closer; one finger pans once zoomed in
+  const zv = { z: 1, x: 0, y: 0 };
+  const view = () => $('canvas', stage);
+  function applyZoom(smooth = false) {
+    const c = view();
+    if (!c) return;
+    const cw = c.offsetWidth, ch = c.offsetHeight;
+    zv.z = Math.max(1, Math.min(6, zv.z));
+    zv.x = Math.min(0, Math.max(cw * (1 - zv.z), zv.x));
+    zv.y = Math.min(0, Math.max(ch * (1 - zv.z), zv.y));
+    c.style.transition = smooth ? 'transform .3s cubic-bezier(.2,.8,.2,1)' : 'none';
+    c.style.transform = zv.z > 1 ? `translate(${zv.x}px, ${zv.y}px) scale(${zv.z})` : '';
+    fitBtn.hidden = zv.z <= 1.01;
+    stage.classList.toggle('zoomed', zv.z > 1.01);
+  }
+  const resetZoom = (smooth = true) => { zv.z = 1; zv.x = 0; zv.y = 0; applyZoom(smooth); };
+  // zoom to `z` keeping the photo point under (cx, cy) where it is
+  function zoomAt(z, cx, cy, from = null) {
+    const c = view();
+    if (!c) return;
+    const f = from || { z: zv.z, x: zv.x, y: zv.y, r: c.getBoundingClientRect() };
+    const u = (cx - f.r.left) / f.z, v = (cy - f.r.top) / f.z; // the point, in unzoomed photo pixels
+    const L = f.r.left - f.x, T = f.r.top - f.y; // where the photo sits unzoomed
+    zv.z = Math.max(1, Math.min(6, z));
+    zv.x = cx - L - zv.z * u; zv.y = cy - T - zv.z * v;
+    applyZoom();
   }
   function show() {
-    stage.classList.toggle('erasing', erasing);
+    stage.classList.toggle('erasing', !!mode);
+    stage.classList.toggle('adding', mode === 'add');
     $$('img, canvas', stage).forEach((n) => n.remove());
-    if (erasing && mask) stage.prepend(renderMaskPreview(cut.raster, mask));
-    else if (cut.result) stage.prepend(h(`<img src="${cutPreview(cut.result)}" alt="" />`));
+    if (mode && mask) { stage.prepend(renderMaskPreview(cut.raster, mask, { ghost: mode === 'add' ? 0.32 : 0 })); applyZoom(); }
+    else { if (cut.result) stage.prepend(h(`<img src="${cutPreview(cut.result)}" alt="" />`)); zv.z = 1; zv.x = 0; zv.y = 0; fitBtn.hidden = true; stage.classList.remove('zoomed'); }
   }
   async function process() {
     if (!cut.raster) return;
@@ -1078,17 +1314,23 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
   }
 
   press(bgBtn, { tap: () => { cut.removeBg = !cut.removeBg; $('.switch', bgBtn).classList.toggle('on', cut.removeBg); bgBtn.setAttribute('aria-checked', String(cut.removeBg)); syncTools(); process(); } });
-  press(eraseBtn, {
-    tap: async () => {
-      erasing = !erasing;
-      syncTools();
-      // the form below may have scrolled the photo (and its hint) up out of sight
-      if (erasing) stage.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
-      if (erasing && !mask) { await process(); return; } // first use on an untouched sticker
-      show();
-    },
-    long: () => { if (!cut.seeds.length) return; cut.seeds.length = 0; toast('Cleared'); process(); },
-  });
+  const toggle = async (m) => {
+    const was = mode;
+    mode = mode === m ? null : m;
+    syncTools();
+    // the form below may have scrolled the photo (and its hint) up out of sight
+    if (mode) stage.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    if (mode && !mask) { await process(); return; } // first use on an untouched sticker
+    if (was && mode) { // from one tool straight to the other: the same photo, at the same zoom
+      const z = { ...zv }; show(); Object.assign(zv, z); applyZoom();
+      return;
+    }
+    show();
+  };
+  const clearAll = () => { if (!cut.seeds.length) return; cut.seeds.length = 0; toast('Cleared'); process(); };
+  press(eraseBtn, { tap: () => toggle('erase'), long: clearAll });
+  press(addBtn, { tap: () => toggle('add'), long: clearAll });
+  press(fitBtn, { tap: () => resetZoom() });
   press($('[data-a=undo]', el), { tap: () => {
     if (!cut.seeds.length) return;
     cut.seeds.pop();
@@ -1101,21 +1343,71 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     if (Math.abs(cut.tolerance - lastTick) >= 5) { haptic('light'); lastTick = cut.tolerance; }
     clearTimeout(timer); timer = setTimeout(() => { timer = null; process(); }, 140);
   });
-  stage.addEventListener('click', (e) => {
-    if (!erasing || !cut.removeBg || !mask) return;
-    const target = $('canvas', stage);
+  function tapAt(cx, cy) {
+    if (!mode || !cut.removeBg || !mask) return;
+    const target = view();
     if (!target) return;
     const r = target.getBoundingClientRect();
-    const nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height;
+    const nx = (cx - r.left) / r.width, ny = (cy - r.top) / r.height;
     if (nx < 0 || ny < 0 || nx > 1 || ny > 1) return;
-    // a finger is wider than a stray line: reach about 14 screen pixels around the tap
-    const reach = Math.min(70, Math.round(14 * cut.raster.width / Math.max(1, r.width)));
-    const hit = eraseTarget(mask, cut.raster.width, cut.raster.height, nx, ny, reach);
-    if (!hit) { haptic('light'); return; } // nothing there to remove
+    // a finger is wider than a stray line: reach about 14 screen pixels around the tap (fewer photo pixels when zoomed in)
+    const reach = Math.max(2, Math.min(70, Math.round(14 * cut.raster.width / Math.max(1, r.width))));
+    const hit = (mode === 'add' ? addTarget : eraseTarget)(mask, cut.raster.width, cut.raster.height, nx, ny, reach);
+    if (!hit) { haptic('light'); return; } // nothing there to remove (or to add back)
     haptic('select');
     cut.seeds.push(hit);
     process();
+  }
+  // one finger: a tap marks the photo, a drag pans it (once zoomed in); two fingers: pinch to zoom and pan
+  const pts = new Map();
+  let gest = null; // { moved, many, from: {z, x, y, r}, d0, m0 } for the current touch
+  const mid = () => { const [a, b] = [...pts.values()]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, d: Math.hypot(b.x - a.x, b.y - a.y) }; };
+  const startFrom = () => {
+    const c = view();
+    gest.from = c ? { z: zv.z, x: zv.x, y: zv.y, r: c.getBoundingClientRect() } : null;
+    if (pts.size >= 2) { const m = mid(); gest.m0 = m; gest.d0 = Math.max(1, m.d); } else { const [a] = [...pts.values()]; gest.m0 = { x: a.x, y: a.y }; }
+  };
+  let lastKind = 'mouse';
+  stage.addEventListener('pointerdown', (e) => {
+    lastKind = e.pointerType;
+    if (!mode || e.target.closest('.zoom-fit') || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    try { stage.setPointerCapture(e.pointerId); } catch { /* gone */ }
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY });
+    if (!gest) gest = { moved: false, many: false };
+    if (pts.size >= 2) gest.many = true;
+    startFrom();
   });
+  stage.addEventListener('pointermove', (e) => {
+    const pt = pts.get(e.pointerId);
+    if (!pt || !gest || !gest.from) return;
+    pt.x = e.clientX; pt.y = e.clientY;
+    if (pts.size >= 2) {
+      const m = mid();
+      zoomAt(gest.from.z * m.d / gest.d0, gest.m0.x, gest.m0.y, gest.from);
+      zv.x += m.x - gest.m0.x; zv.y += m.y - gest.m0.y; applyZoom();
+      return;
+    }
+    if (!gest.moved && Math.hypot(pt.x - pt.x0, pt.y - pt.y0) > 8) gest.moved = true;
+    if (gest.moved && zv.z > 1) { zv.x = gest.from.x + (pt.x - gest.m0.x); zv.y = gest.from.y + (pt.y - gest.m0.y); applyZoom(); }
+  });
+  const lift = (e) => {
+    const pt = pts.get(e.pointerId);
+    if (!pt) return;
+    pts.delete(e.pointerId);
+    if (pts.size) { startFrom(); return; } // a finger stays: it carries on panning from here
+    const g = gest; gest = null;
+    if (e.type === 'pointerup' && g && !g.moved && !g.many) tapAt(e.clientX, e.clientY);
+    if (g && g.many && zv.z < 1.08) resetZoom(); // pinched back out: settle at the whole photo
+  };
+  stage.addEventListener('pointerup', lift);
+  stage.addEventListener('pointercancel', lift);
+  stage.addEventListener('wheel', (e) => {
+    if (!mode || !view()) return;
+    e.preventDefault();
+    zoomAt(zv.z * Math.exp(-e.deltaY * 0.004), e.clientX, e.clientY);
+  }, { passive: false });
+  // a double tap would mark the photo twice; double-click with a mouse zooms instead
+  stage.addEventListener('dblclick', (e) => { if (mode && lastKind === 'mouse') { if (zv.z > 1.01) resetZoom(); else zoomAt(2.5, e.clientX, e.clientY); } });
   syncTools();
   show();
   return {
@@ -1146,20 +1438,21 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
     // a name the app generated stays automatic, so it follows later category / type changes
     name: item && item.name !== autoName(item.colors, item.cat, item.sub) ? item.name : '',
     price: item?.price ?? '',
+    brand: item?.brand || '',
     customSubs: [],
   };
 
   const c = h(`<div>
-    <div class="sheet-head"><h2>${item ? 'Edit piece' : 'New piece'}</h2></div>
+    <div class="sheet-head"><h2>${item ? 'Edit item' : 'New item'}</h2></div>
     <div data-step="photo"></div>
     <div data-step="details"></div>
   </div>`);
   const s = sheet(c);
   // swipe, scrim tap and Escape all ask first once there is a photo or a change to lose
-  const sig = () => JSON.stringify([st.original === (item?.original || null), st.cat, st.sub, st.name, st.price, st.tolerance, st.removeBg, st.seeds]);
+  const sig = () => JSON.stringify([st.original === (item?.original || null), st.cat, st.sub, st.name, st.price, st.brand, st.tolerance, st.removeBg, st.seeds]);
   const clean = sig();
   s.dismiss = async () => {
-    if (sig() !== clean && !(await confirmSheet(item ? 'Discard changes?' : 'Discard this piece?', '', 'Discard'))) return;
+    if (sig() !== clean && !(await confirmSheet(item ? 'Discard changes?' : 'Discard this item?', '', 'Discard'))) return;
     s.close();
   };
   let editor = null;
@@ -1241,9 +1534,10 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
     const open = !!item || !!state.moreOpen;
     const d = h(`<div>
       <div class="field"><label>Category</label><div class="seg">${CAT_ORDER.map((k) => `<button data-cat="${k}" class="${st.cat === k ? 'active' : ''}">${svg(k)}${CATS[k].label}</button>`).join('')}</div></div>
-      ${item ? '' : `<button class="more-toggle" data-a="more" aria-expanded="${open}"><span>Type, name, price</span>${svg('chev')}</button>`}
+      ${item ? '' : `<button class="more-toggle" data-a="more" aria-expanded="${open}"><span>Type, brand, name, price</span>${svg('chev')}</button>`}
       <div class="more ${open ? 'open' : ''}" data-more>
         <div class="field"><label>Type</label><div class="wrap-chips" data-subs></div></div>
+        <div data-brand></div>
         <div class="field"><label>Name</label><input class="input" data-name placeholder="Name" value="${esc(st.name)}" maxlength="40" /></div>
         ${item ? '' : `<div class="field"><label>Price (optional)</label><div class="price-wrap"><span>$</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
       </div>
@@ -1251,6 +1545,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
       ${item ? '' : '<button class="btn ghost block" data-a="next">Add and do another</button>'}
     </div>`);
     details.append(d);
+    $('[data-brand]', d).replaceWith(brandField(() => st.brand, (v) => { st.brand = v; }));
     $$('[data-cat]', d).forEach((b) => press(b, { tap: () => {
       st.cat = b.dataset.cat; st.sub = null; st.autoCat = false;
       $$('[data-cat]', d).forEach((x) => x.classList.toggle('active', x === b));
@@ -1320,6 +1615,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
       created: item?.created || Date.now(),
       name: (st.name || '').trim() || autoName(colors, st.cat, st.sub),
       cat: st.cat, sub: st.sub,
+      brand: (st.brand || '').trim() || undefined,
       price: item ? (item.price ?? null) : parsePrice(st.price), // editing never touches the price
       sticker: st.result.dataURL,
       stickerDark: st.result.darkURL || (item && st.result.dataURL === itemById(item.id)?.sticker ? itemById(item.id)?.stickerDark : null) || null,
@@ -1327,6 +1623,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
       original: st.original,
       cut: { v: CUT_V, tolerance: st.tolerance, seeds: st.seeds, removeBg: st.removeBg },
     };
+    if (!rec.brand) delete rec.brand;
     await db.put('items', rec);
     const i = state.items.findIndex((x) => x.id === rec.id);
     if (i >= 0) state.items[i] = rec; else state.items.push(rec);
@@ -1420,8 +1717,8 @@ function openBatch(files, presetCat = null) {
     const l = live();
     const done = l.filter((e) => e.status === 'done').length, cutting = l.length - done;
     const missing = l.filter((e) => !e.cat).length;
-    const pieces = `${l.length} piece${l.length === 1 ? '' : 's'}`;
-    $('[data-title]', c).textContent = 'New pieces';
+    const pieces = `${l.length} item${l.length === 1 ? '' : 's'}`;
+    $('[data-title]', c).textContent = 'New items';
     $('[data-bar]', c).style.width = `${l.length ? (done / l.length) * 100 : 100}%`;
     const notes = [];
     if (failed) notes.push(`${failed} unreadable`);
@@ -1552,7 +1849,7 @@ function openBatch(files, presetCat = null) {
     }
     cancelled = true;
     haptic('success');
-    toast(`${added} piece${added === 1 ? '' : 's'} added`);
+    toast(`${added} item${added === 1 ? '' : 's'} added`);
     s.close();
     if (state.view !== 'closet') setView('closet'); else render();
   }
@@ -1621,12 +1918,23 @@ function openBatch(files, presetCat = null) {
 
 /* ------------------------------------------------------------------ mix: build a fit row by row */
 
-// one row per kind of piece to begin with; more rows of a kind can be added for layers
+// the rows Mix shows, top to bottom: up to five, and a kind can have more than one row (a shirt under a jacket)
 const mix = { rows: [] };
-const resetMix = () => { mix.rows = CAT_ORDER.map((cat) => ({ cat, id: undefined, extra: false })); };
+const MIX_KEY = 'closet.mixRows';
+const MIX_MAX = 5;
+const MIX_DEFAULT = ['outer', 'top', 'bottom', 'shoes', 'acc'];
+function mixCats() {
+  try {
+    const a = JSON.parse(localStorage.getItem(MIX_KEY) || 'null');
+    const ok = Array.isArray(a) ? a.filter((k) => CATS[k]).slice(0, MIX_MAX) : [];
+    if (ok.length) return ok;
+  } catch { /* not stored: the default rows */ }
+  return [...MIX_DEFAULT];
+}
+const saveMixCats = () => { try { localStorage.setItem(MIX_KEY, JSON.stringify(mix.rows.map((r) => r.cat))); } catch { /* kept for this visit */ } };
+const resetMix = () => { mix.rows = mixCats().map((cat) => ({ cat, id: undefined })); };
 resetMix();
 const ONE = { top: 'Top', outer: 'Outerwear', bottom: 'Bottom', shoes: 'Shoes', acc: 'Accessory' };
-const MIX_ROWS_MAX = 3; // rows of one kind
 
 function renderMix(focusRow = null) {
   const root = $('#view-mix');
@@ -1644,9 +1952,10 @@ function renderMix(focusRow = null) {
     const clean = all.filter((i) => !inWash(i));
     return clean.length ? clean : all;
   };
-  // an extra row needs a second piece to make sense
-  mix.rows = mix.rows.filter((r) => !r.extra || pool(r.cat).length > 1);
+  // a row of a kind with nothing in it yet waits, hidden, until something is added
   const rows = mix.rows.filter((r) => pool(r.cat).length);
+  // a kind's second (or third) row is a layer: it starts on something the rows above are not showing
+  rows.forEach((r, i) => { r.extra = rows.findIndex((x) => x.cat === r.cat) !== i; });
   const taken = (r) => new Set(rows.filter((x) => x !== r && x.cat === r.cat).map((x) => x.id).filter(Boolean));
   const wrap = h(`<div class="mix" style="--n:${rows.length}"></div>`);
   const starts = [];
@@ -1662,7 +1971,7 @@ function renderMix(focusRow = null) {
       r.id = r.extra ? (free ? free.id : null) : r.cat === 'acc' || r.cat === 'outer' ? null : items[0].id;
     }
     const slots = [null, ...items];
-    const row = h(`<div class="mix-row"><div class="mix-track" role="listbox" tabindex="0" aria-label="${r.extra ? 'Another ' + ONE[r.cat].toLowerCase() : CATS[r.cat].label}"></div>${r.extra ? `<button class="mix-x" aria-label="Remove this row">${svg('close')}</button>` : ''}</div>`);
+    const row = h(`<div class="mix-row"><div class="mix-track" role="listbox" tabindex="0" aria-label="${r.extra ? 'Another ' + ONE[r.cat].toLowerCase() : CATS[r.cat].label}"></div></div>`);
     const track = $('.mix-track', row);
     slots.forEach((it, si) => track.append(it
       ? h(`<button class="mix-item" role="option" tabindex="-1" id="mix-${ri}-${si}" aria-label="${esc(it.name)}"><img src="${stickerOf(it)}" data-st="${it.id}" alt="" draggable="false" /></button>`)
@@ -1703,15 +2012,14 @@ function renderMix(focusRow = null) {
       e.preventDefault(); go(cur + (e.key === 'ArrowRight' ? 1 : -1));
     });
     r.go = (id) => go(Math.max(0, slots.findIndex((it) => (it ? it.id : null) === (id || null))));
-    const x = $('.mix-x', row);
-    if (x) press(x, { tap: () => { const i = mix.rows.indexOf(r); mix.rows.splice(i, 1); renderMix(mix.rows[i - 1] || mix.rows[0]); } });
     if (r === focusRow) focusEl = track;
     wrap.append(row);
     starts.push(() => { track.scrollLeft = cur * step(); paint(); mark(); });
   });
 
+  if (!rows.length) wrap.append(h('<p class="mix-none">Nothing in these rows yet. Add items, or choose other rows.</p>'));
   const actions = h(`<div class="mix-actions">
-    <button class="btn soft" data-a="layer" aria-label="Layer">${svg('layers')}<span>Layer</span></button>
+    <button class="btn soft" data-a="rows" aria-label="Rows">${svg('layers')}<span>Rows</span></button>
     <button class="btn soft" data-a="shuffle" aria-label="Shuffle">${svg('swap')}<span>Shuffle</span></button>
   </div>`);
   actions.append(save);
@@ -1719,21 +2027,9 @@ function renderMix(focusRow = null) {
   root.append(wrap);
   starts.forEach((f) => f());
   save.classList.toggle('off', !chosen().length);
-  if (focusRow) (focusEl || $('[data-a=layer]', actions)).focus({ preventScroll: true });
+  if (focusRow) (focusEl || $('[data-a=rows]', actions)).focus({ preventScroll: true });
 
-  // a second (or third) row of a kind, for layering: a shirt under a jacket, a bag and a hat
-  const layerBtn = $('[data-a=layer]', actions);
-  press(layerBtn, { tap: (e) => {
-    const many = CAT_ORDER.filter((k) => pool(k).length > 1);
-    const can = many.filter((k) => mix.rows.filter((r) => r.cat === k).length < MIX_ROWS_MAX);
-    if (!can.length) { haptic('light'); toast(many.length ? `Up to ${MIX_ROWS_MAX} rows of each kind` : 'Add more pieces first'); return; }
-    contextMenu(layerBtn, 'Add a row', can.map((k) => ({ icon: k, label: ONE[k], run: () => {
-      const last = mix.rows.map((r) => r.cat).lastIndexOf(k);
-      const added = { cat: k, id: undefined, extra: true };
-      mix.rows.splice(last + 1, 0, added);
-      renderMix(added);
-    } })), e);
-  }, hapticTap: null });
+  press($('[data-a=rows]', actions), { tap: () => openMixRows() });
   // spin every row to a combination whose colours go together
   press($('[data-a=shuffle]', actions), { tap: () => {
     const pick = Object.fromEntries(suggestLook().map((id) => [itemById(id).cat, id]));
@@ -1751,18 +2047,120 @@ function renderMix(focusRow = null) {
   let saving = false;
   press(save, { tap: async () => {
     const ids = chosen();
-    if (!ids.length) { haptic('warning'); toast('Choose a piece first'); return; }
+    if (!ids.length) { haptic('warning'); toast('Choose an item first'); return; }
     if (saving) return;
     saving = true;
     try { await saveLook(ids); } catch { haptic('warning'); toast('Could not save the look'); } finally { saving = false; }
   }, hapticTap: null });
 }
 
+/** The Rows sheet: what Mix shows, top to bottom. Drag the handle to reorder, minus to remove, up to five rows. */
+function openMixRows() {
+  const c = h(`<div class="rows-ed"><h2>Rows</h2><p class="sub">What Mix shows, top to bottom. Drag ${svg('grip', 'class="inline"')} to move a row. Up to ${MIX_MAX}; a kind can have more than one.</p>
+    <ol class="rows-list"></ol>
+    <button class="btn soft rows-add" data-a="add">${svg('plus')}<span>Add a row</span></button>
+    <div class="row-btns"><button class="btn soft" data-a="reset">Reset</button><button class="btn sage" data-a="done">Done</button></div></div>`);
+  const list = $('.rows-list', c), add = $('[data-a=add]', c);
+  const s = sheet(c, { onClose: () => { saveMixCats(); render(); } });
+  const count = (k) => state.items.filter((i) => i.cat === k).length;
+  // every change shows at once on the Mix page underneath
+  const changed = () => { saveMixCats(); if (state.view === 'mix') renderMix(); };
+  const draw = (focus = null, enter = null) => {
+    list.innerHTML = '';
+    const n = mix.rows.length;
+    mix.rows.forEach((r, i) => {
+      const k = count(r.cat);
+      const li = h(`<li class="rows-item${r === enter ? ' in' : ''}">
+        <button class="grip" aria-label="Move the ${CATS[r.cat].label.toLowerCase()} row: ${i + 1} of ${n}. Use the arrow keys">${svg('grip')}</button>
+        <button class="rk" aria-label="Row ${i + 1}, ${CATS[r.cat].label}. Change what it shows">${svg(r.cat)}<span>${CATS[r.cat].label}<small>${k ? `${k} ${k === 1 ? 'item' : 'items'}` : 'No items yet'}</small></span>${svg('chev')}</button>
+        <button class="rm" aria-label="Remove the ${CATS[r.cat].label.toLowerCase()} row"${n < 2 ? ' disabled' : ''}>${svg('minus')}</button></li>`);
+      const grip = $('.grip', li), rk = $('.rk', li), rm = $('.rm', li);
+      press(rk, { tap: () => contextMenu(rk, 'Show', CAT_ORDER.map((cat) => ({ icon: cat, label: CATS[cat].label, run: () => {
+        if (r.cat === cat) return;
+        r.cat = cat; r.id = undefined; changed(); draw(r);
+      } })), null), hapticTap: null });
+      press(rm, { tap: () => {
+        if (mix.rows.length < 2 || li.classList.contains('out')) return; // a second tap while it slides away does nothing
+        li.classList.add('out');
+        setTimeout(() => {
+          const at = mix.rows.indexOf(r);
+          if (at < 0) return;
+          mix.rows.splice(at, 1); changed(); draw(mix.rows[Math.min(at, mix.rows.length - 1)]);
+        }, 200);
+      } });
+      grip.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+        e.preventDefault();
+        const to = i + (e.key === 'ArrowUp' ? -1 : 1);
+        if (to < 0 || to >= n) return;
+        mix.rows.splice(to, 0, ...mix.rows.splice(i, 1)); haptic('select'); changed(); draw(r);
+      });
+      dragRow(grip, li, i);
+      list.append(li);
+      if (r === focus) setTimeout(() => (focus === enter ? rk : grip).focus({ preventScroll: true }), 0);
+    });
+    add.classList.toggle('off', n >= MIX_MAX);
+    add.setAttribute('aria-disabled', String(n >= MIX_MAX));
+  };
+  // drag the handle: the row follows the finger and the others slide out of its way
+  function dragRow(grip, li, from) {
+    let d = null;
+    grip.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || d) return;
+      e.preventDefault(); e.stopPropagation();
+      try { grip.setPointerCapture(e.pointerId); } catch { /* gone already */ }
+      const els = [...list.children], gap = els.length > 1 ? els[1].offsetTop - els[0].offsetTop : li.offsetHeight;
+      d = { id: e.pointerId, y0: e.clientY, to: from, els, gap };
+      li.classList.add('dragging'); list.classList.add('moving');
+      haptic('select');
+    });
+    grip.addEventListener('pointermove', (e) => {
+      if (!d || e.pointerId !== d.id) return;
+      const n = d.els.length;
+      const dy = Math.max(-from * d.gap - 10, Math.min((n - 1 - from) * d.gap + 10, e.clientY - d.y0));
+      li.style.transform = `translateY(${dy}px) scale(1.03)`;
+      const to = Math.max(0, Math.min(n - 1, from + Math.round(dy / d.gap)));
+      if (to === d.to) return;
+      d.to = to; haptic('select');
+      d.els.forEach((el, k) => {
+        if (el === li) return;
+        const by = from < to && k > from && k <= to ? -d.gap : from > to && k < from && k >= to ? d.gap : 0;
+        el.style.transform = by ? `translateY(${by}px)` : '';
+      });
+    });
+    const end = (e) => {
+      if (!d || e.pointerId !== d.id) return;
+      const { to, gap } = d; d = null;
+      li.classList.remove('dragging');
+      li.style.transform = `translateY(${(to - from) * gap}px)`; // lands in its new place, then the list is drawn in order
+      setTimeout(() => {
+        list.classList.remove('moving');
+        const r = mix.rows[from];
+        if (to !== from) { mix.rows.splice(to, 0, ...mix.rows.splice(from, 1)); changed(); haptic('light'); }
+        draw(r);
+      }, 190);
+    };
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+  }
+  press(add, { tap: () => {
+    if (mix.rows.length >= MIX_MAX) { haptic('warning'); toast(`Up to ${MIX_MAX} rows`); return; }
+    contextMenu(add, 'Add a row', CAT_ORDER.map((cat) => ({ icon: cat, label: CATS[cat].label, run: () => {
+      const r = { cat, id: undefined };
+      mix.rows.push(r); changed(); draw(r, r);
+    } })), null);
+  }, hapticTap: null });
+  press($('[data-a=reset]', c), { tap: () => { mix.rows = MIX_DEFAULT.map((cat) => ({ cat, id: undefined })); changed(); draw(); haptic('success'); }, hapticTap: null });
+  press($('[data-a=done]', c), { tap: () => s.close() });
+  draw();
+}
+
 /** A new look from these pieces, laid out by the app and added to the Looks page. */
 async function saveLook(ids) {
   const board = isDark() ? BOARD_COLORS[BOARD_COLORS.length - 1] : BOARD_COLORS[0];
   const ratio = lookRatio();
-  const o = { id: uid(), name: 'Untitled', pieces: await layoutPieces(ids, ratio, darkBoard(board)), board, created: Date.now(), updated: Date.now() };
+  const o = { id: uid(), name: 'Untitled', pieces: await layoutPieces(ids, ratio, darkBoard(board)), board, auto: prefs.tint, created: Date.now(), updated: Date.now() };
+  if (o.auto) o.board = autoBoard(o);
   o.thumb = await renderThumb(o, { W: 1, H: ratio });
   await db.put('outfits', o);
   state.outfits.push(o);
@@ -1880,7 +2278,7 @@ async function unwearLook(o, t = lastWear(o), keep = true) {
 
 function surpriseLook() {
   const ids = suggestLook();
-  if (!ids.length) { toast('Add pieces first'); return; }
+  if (!ids.length) { toast('Add items first'); return; }
   openEditor(null, ids);
 }
 
@@ -1928,7 +2326,7 @@ const forgetImgs = (id) => { for (const k of [...imgCache.keys()]) if (k === id 
 
 function openEditor(outfit = null, startIds = []) {
   const o = outfit ? structuredClone(outfit) : {
-    id: uid(), name: 'Untitled', pieces: [], board: isDark() ? BOARD_COLORS[BOARD_COLORS.length - 1] : BOARD_COLORS[0], created: Date.now(), updated: Date.now(),
+    id: uid(), name: 'Untitled', pieces: [], board: isDark() ? BOARD_COLORS[BOARD_COLORS.length - 1] : BOARD_COLORS[0], auto: prefs.tint, created: Date.now(), updated: Date.now(),
   };
   let selected = null;
   let dirty = !outfit && startIds.length > 0;
@@ -1940,7 +2338,7 @@ function openEditor(outfit = null, startIds = []) {
       <div class="palette-tray"><div class="pill-strip" data-in aria-label="Colours in this look"></div></div>
       <button class="round dark" data-a="save" aria-label="Save">${svg('check')}</button>
     </div>
-    <div class="board"><div class="hint">Tap Add to choose pieces</div></div>
+    <div class="board"><div class="hint">Tap Add to choose items</div></div>
     <div class="ed-tray" data-tray></div>
     <div class="editor-bar">
       <div class="bar-main">
@@ -1953,7 +2351,7 @@ function openEditor(outfit = null, startIds = []) {
           </span><small>Worn</small>
         </div>
       </div>
-      <div class="bar-piece" role="toolbar" aria-label="Chosen piece">
+      <div class="bar-piece" role="toolbar" aria-label="Chosen item">
         <button class="tool" data-a="front"><span class="round">${svg('up')}</span><small>To front</small></button>
         <button class="tool" data-a="backward"><span class="round">${svg('down')}</span><small>To back</small></button>
         <button class="tool" data-a="p-swap"><span class="round">${svg('swap')}</span><small>Swap</small></button>
@@ -2061,8 +2459,6 @@ function openEditor(outfit = null, startIds = []) {
 
   // ----- gestures
   function bindPiece(p, el) {
-    let pointers = new Map();
-    let start = null; let longTimer = null; let moved = false;
     const handle = $('.handle', el);
 
     handle.addEventListener('pointerdown', (e) => {
@@ -2081,67 +2477,77 @@ function openEditor(outfit = null, startIds = []) {
       handle.addEventListener('pointermove', mv); handle.addEventListener('pointerup', up);
     });
 
-    el.addEventListener('pointerdown', (e) => {
-      e.stopPropagation();
-      el.setPointerCapture(e.pointerId);
-      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    el.addEventListener('pointerdown', (e) => { e.stopPropagation(); fingerDown(e, p, el); });
+    el.addEventListener('contextmenu', (e) => { e.preventDefault(); if (g) { clearTimeout(g.longTimer); g = null; } pieceMenu(p, el, e); });
+  }
+
+  // ----- one gesture at a time: the first finger picks the item; every other finger, wherever it lands
+  //       (on another item or on the board), joins in to pinch and turn that same item
+  let g = null; // { p, el, pts: Map(pointerId -> {x, y}), start, moved, longTimer }
+  function baseline() {
+    const pts = [...g.pts.values()], p = g.p;
+    if (pts.length === 1) g.start = { x: p.x, y: p.y, px: pts[0].x, py: pts[0].y };
+    else {
+      const [a, b] = pts;
+      g.start = { w: p.w, rot: p.rot, d: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)), ang: Math.atan2(b.y - a.y, b.x - a.x), x: p.x, y: p.y, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+    }
+  }
+  function fingerDown(e, p, el) {
+    try { board.setPointerCapture(e.pointerId); } catch { /* the pointer already left */ }
+    if (!g) {
+      g = { p, el, pts: new Map(), start: null, moved: false, longTimer: 0 };
       if (selected !== p) { select(p); haptic('select'); }
-      // bring to front softly on touch
-      if (pointers.size === 1) {
-        moved = false;
-        start = { x: p.x, y: p.y, px: e.clientX, py: e.clientY };
-        clearTimeout(longTimer);
-        longTimer = setTimeout(() => { if (!moved) { pointers.clear(); haptic('long'); pieceMenu(p, el, e); } }, 520);
-      } else if (pointers.size === 2) {
-        clearTimeout(longTimer);
-        const [a, b] = [...pointers.values()];
-        start = { w: p.w, rot: p.rot, d: Math.hypot(b.x - a.x, b.y - a.y), ang: Math.atan2(b.y - a.y, b.x - a.x), x: p.x, y: p.y, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
-      }
-    });
-    el.addEventListener('pointermove', (e) => {
-      if (!pointers.has(e.pointerId)) return;
-      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      const { W, H } = bsize();
-      if (pointers.size === 1 && start && 'px' in start) {
-        const dx = e.clientX - start.px, dy = e.clientY - start.py;
-        if (!moved && Math.hypot(dx, dy) > 6) { moved = true; clearTimeout(longTimer); }
-        if (moved) {
-          p.x = Math.max(-0.1, Math.min(1.1, start.x + dx / W));
-          p.y = Math.max(-0.1, Math.min(1.1, start.y + dy / H));
-          place(p); dirty = true;
-        }
-      } else if (pointers.size === 2 && start && 'd' in start) {
-        const [a, b] = [...pointers.values()];
-        const d = Math.hypot(b.x - a.x, b.y - a.y), ang = Math.atan2(b.y - a.y, b.x - a.x);
-        p.w = Math.max(0.08, Math.min(1.2, start.w * d / start.d));
-        p.rot = snapRot(start.rot + (ang - start.ang) * 180 / Math.PI);
-        p.x = start.x + ((a.x + b.x) / 2 - start.mx) / W;
-        p.y = start.y + ((a.y + b.y) / 2 - start.my) / H;
+      g.longTimer = setTimeout(() => { if (g && !g.moved && g.pts.size === 1) { const gp = g; g = null; haptic('long'); pieceMenu(gp.p, gp.el, e); } }, 520);
+    } else {
+      clearTimeout(g.longTimer); // a second finger: a pinch, not a long press
+      g.moved = true;
+    }
+    g.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    baseline();
+  }
+  board.addEventListener('pointermove', (e) => {
+    if (!g || !g.pts.has(e.pointerId)) return;
+    g.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const { W, H } = bsize(), p = g.p, st = g.start, pts = [...g.pts.values()];
+    if (pts.length === 1) {
+      const dx = pts[0].x - st.px, dy = pts[0].y - st.py;
+      if (!g.moved && Math.hypot(dx, dy) > 6) { g.moved = true; clearTimeout(g.longTimer); }
+      if (g.moved) {
+        p.x = Math.max(-0.1, Math.min(1.1, st.x + dx / W));
+        p.y = Math.max(-0.1, Math.min(1.1, st.y + dy / H));
         place(p); dirty = true;
       }
-    });
-    const end = (e) => {
-      pointers.delete(e.pointerId);
-      clearTimeout(longTimer);
-      if (pointers.size === 1) {
-        const [only] = [...pointers.values()];
-        start = { x: p.x, y: p.y, px: only.x, py: only.y }; moved = true;
-      } else if (pointers.size === 0) {
-        if (moved) haptic('light');
-        start = null;
-      }
-    };
-    el.addEventListener('pointerup', end);
-    el.addEventListener('pointercancel', end);
-    el.addEventListener('contextmenu', (e) => { e.preventDefault(); clearTimeout(longTimer); pointers.clear(); pieceMenu(p, el, e); });
-  }
+    } else {
+      const [a, b] = pts;
+      const d = Math.hypot(b.x - a.x, b.y - a.y), ang = Math.atan2(b.y - a.y, b.x - a.x);
+      p.w = Math.max(0.08, Math.min(1.2, st.w * d / st.d));
+      p.rot = snapRot(st.rot + (ang - st.ang) * 180 / Math.PI);
+      p.x = st.x + ((a.x + b.x) / 2 - st.mx) / W;
+      p.y = st.y + ((a.y + b.y) / 2 - st.my) / H;
+      place(p); dirty = true;
+    }
+  });
+  const fingerUp = (e) => {
+    if (!g || !g.pts.has(e.pointerId)) return;
+    g.pts.delete(e.pointerId);
+    if (g.pts.size) { baseline(); return; } // the remaining finger carries on from where things are
+    clearTimeout(g.longTimer);
+    if (g.moved) haptic('light');
+    g = null;
+  };
+  board.addEventListener('pointerup', fingerUp);
+  board.addEventListener('pointercancel', fingerUp);
   let lastSnap = null;
   function snapRot(r) {
     const near = Math.round(r / 45) * 45;
     if (Math.abs(r - near) < 4) { if (lastSnap !== near) { haptic('select'); lastSnap = near; } return near; }
     lastSnap = null; return r;
   }
-  board.addEventListener('pointerdown', (e) => { if (e.target === board || e.target.classList.contains('hint')) select(null); });
+  board.addEventListener('pointerdown', (e) => {
+    if (e.target !== board && !e.target.classList.contains('hint')) return;
+    if (g) fingerDown(e, g.p, g.el); // a finger on the empty board while an item is held: it helps pinch that item
+    else select(null);
+  });
   board.addEventListener('pointerdown', () => closeTray(), true);
 
   // ----- the tray that opens above the toolbar (background colours, or pieces to swap in)
@@ -2193,7 +2599,7 @@ function openEditor(outfit = null, startIds = []) {
   function swapTray(p) {
     if (selected !== p) select(p);
     openTray('swap', () => {
-      tray.setAttribute('aria-label', 'Swap for another piece');
+      tray.setAttribute('aria-label', 'Swap for another item');
       [itemById(p.itemId), ...swapChoices(p)].filter(Boolean).forEach((it) => {
         const b = h(`<button class="swp" aria-label="${esc(it.name)}" aria-pressed="${it.id === p.itemId}"><img src="${stickerOf(it)}" alt="" /></button>`);
         press(b, { tap: () => {
@@ -2260,11 +2666,16 @@ function openEditor(outfit = null, startIds = []) {
       const p = pool.splice(pool.findIndex((q) => q.itemId === n.itemId), 1)[0];
       return Object.assign(p, { x: n.x, y: n.y, w: n.w, rot: n.rot });
     });
-    o.pieces.forEach((p) => {
+    o.pieces.forEach((p, k) => {
       const el = nodes.get(p);
       if (!el) return;
-      if (animate) { el.style.transition = 'transform .7s cubic-bezier(.34,1.3,.64,1), width .7s cubic-bezier(.34,1.3,.64,1)'; setTimeout(() => (el.style.transition = ''), 740); }
+      if (!animate) { place(p); return; }
+      const delay = Math.min(k * 45, 300);
+      el.style.transition = `transform .75s cubic-bezier(.3,1.45,.5,1) ${delay}ms, width .75s cubic-bezier(.3,1.45,.5,1) ${delay}ms`;
+      el.classList.remove('hop'); void el.offsetWidth; el.classList.add('hop');
+      setTimeout(() => { el.style.transition = ''; el.classList.remove('hop'); }, 820 + delay);
       place(p);
+      if (k < 6) setTimeout(() => haptic('light'), delay + 380);
     });
     dirty = true;
   }
@@ -2293,7 +2704,7 @@ function openEditor(outfit = null, startIds = []) {
   function openPicker(onlyCat = null) {
     closeTray();
     let cat = onlyCat || 'all';
-    const pc = h(`<div><h2>Add pieces</h2>
+    const pc = h(`<div><h2>Add items</h2>
       <div class="chips" data-c></div><div class="picker-grid" data-g></div></div>`);
     sheet(pc);
     const draw = () => {
@@ -2305,7 +2716,7 @@ function openEditor(outfit = null, startIds = []) {
       });
       const g = $('[data-g]', pc); g.innerHTML = '';
       let list = state.items.filter((i) => cat === 'all' || i.cat === cat);
-      if (!list.length) g.append(h(`<p style="grid-column:1/-1;color:var(--ink-3);text-align:center;padding:30px 0">${state.items.length ? 'No pieces' : 'Your closet is empty'}</p>`));
+      if (!list.length) g.append(h(`<p style="grid-column:1/-1;color:var(--ink-3);text-align:center;padding:30px 0">${state.items.length ? 'No items' : 'Your closet is empty'}</p>`));
       list.forEach((it, idx) => {
         const inLook = o.pieces.some((p) => p.itemId === it.id);
         const b = h(`<button class="pick-item ${inLook ? 'in' : ''} ${inWash(it) ? 'wash' : ''}" aria-label="${esc(it.name)}" style="animation:pieceIn .5s ${Math.min(idx, 14) * 25}ms both cubic-bezier(.22,1,.36,1)"><img src="${stickerOf(it)}" alt="" /><span class="on">${svg('check')}</span></button>`);
@@ -2406,15 +2817,20 @@ async function drawLook(o, { W, H }, width) {
 
 /* ------------------------------------------------------------------ tally + settings */
 
-function renderStats() {
-  const root = $('#view-stats');
+/** The More page: the closet in numbers, then the settings. */
+function renderMore() {
+  const root = $('#view-more');
   root.innerHTML = '';
-  if (!state.items.length) {
-    const e = h(`<div class="empty"><h3>Nothing to count yet</h3><button class="btn">${svg('plus')} Add clothes</button></div>`);
+  if (state.items.length) renderStats(root);
+  else {
+    const e = h(`<div class="empty more-empty"><h3>Nothing to count yet</h3><button class="btn">${svg('plus')} Add clothes</button></div>`);
     press($('.btn', e), { tap: () => openAdd() });
     root.append(e);
-    return;
   }
+  root.append(settingsPanel());
+}
+
+function renderStats(root) {
   const t = totals(), now = Date.now();
   const maxN = Math.max(1, ...CAT_ORDER.map((k) => t.by[k].n));
   const unpriced = t.n - t.priced;
@@ -2427,7 +2843,7 @@ function renderStats() {
   const resting = state.items.filter((i) => now - lastWear(i) > 30 * DAY_MS).length;
   const palette = state.items.map((i) => mainColors(i)[0]).filter(Boolean).sort((a, b) => rainbowKey(a) - rainbowKey(b));
   const c = h(`<div class="stats">
-    <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'}</small></div>
+    <div class="big-total"><div class="v">${t.n}</div><small>item${t.n === 1 ? '' : 's'}</small></div>
     <div class="breakdown">${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 70}ms"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}</div>
     <div class="kv three">
       <div><small>Looks</small><b>${state.outfits.length}</b></div>
@@ -2456,7 +2872,7 @@ function renderStats() {
     renderCloset();
   } });
   // after pricing: refresh the numbers and hand focus back to the pill
-  const prices = () => openPrices(() => { if (state.view === 'stats') { renderStats(); $('#view-stats [data-a=prices]')?.focus({ preventScroll: true }); } });
+  const prices = () => openPrices(() => { if (state.view === 'more') { renderMore(); $('#view-more [data-a=prices]')?.focus({ preventScroll: true }); } });
   press($('[data-a=prices]', c), { tap: prices, long: prices, hapticTap: 'select' });
 }
 
@@ -2558,7 +2974,7 @@ function openPrices(onClose) {
       list.append(row);
     });
   };
-  if (!state.items.length) list.append(h('<p class="pr-empty">No pieces yet</p>'));
+  if (!state.items.length) list.append(h('<p class="pr-empty">No items yet</p>'));
   section('To price', todo);
   section('Priced', done);
   syncTotal();
@@ -2572,27 +2988,40 @@ function openPrices(onClose) {
   } });
 }
 
-function openSettings() {
-  const c = h(`<div><h2>Settings</h2>
-    <div class="field"><label id="set-theme">Appearance</label><div class="seg three" role="group" aria-labelledby="set-theme">
-      ${[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-theme-opt="${k}">${l}</button>`).join('')}</div></div>
-    <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="exp">Backup</button><button class="btn soft" data-a="imp">Restore</button></div>
-    <button class="btn ghost block" data-a="wipe">Clear everything</button></div>`);
-  const s = sheet(c);
+/** Settings, as a section of the More page. */
+function settingsPanel() {
+  const c = h(`<section class="settings" aria-labelledby="set-h"><h3 class="st-h" id="set-h">Settings</h3>
+    <div class="set-card">
+      <div class="set-row"><span id="set-theme">Appearance</span><div class="seg three" role="group" aria-labelledby="set-theme">
+        ${[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-theme-opt="${k}">${l}</button>`).join('')}</div></div>
+      <div class="set-row opt"><span id="set-tint">Colour backgrounds<small>Each item's card, and each new look, takes a soft tint of its colours</small></span><button class="switch" role="switch" data-a="tint" aria-labelledby="set-tint"></button></div>
+    </div>
+    <div class="set-card">
+      <button class="set-link" data-a="mixrows">${svg('layers')}<span>Mix rows<small>${mix.rows.map((r) => esc(CATS[r.cat].label)).join(' · ')}</small></span>${svg('chev', 'class="go"')}</button>
+    </div>
+    <div class="set-card">
+      <button class="set-link" data-a="exp">${svg('download')}<span>Backup</span></button>
+      <button class="set-link" data-a="imp">${svg('upload')}<span>Restore a backup</span></button>
+      <button class="set-link danger" data-a="wipe">${svg('trash')}<span>Clear everything</span></button>
+    </div>
+  </section>`);
   const sync = () => {
     $$('[data-theme-opt]', c).forEach((b) => { const on = b.dataset.themeOpt === prefs.theme; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
+    const t = $('[data-a=tint]', c); t.classList.toggle('on', prefs.tint); t.setAttribute('aria-checked', String(prefs.tint));
   };
-  // pieces are drawn with a different sticker edge on dark, so the page behind is drawn again
-  $$('[data-theme-opt]', c).forEach((b) => press(b, { tap: () => { prefs.theme = b.dataset.themeOpt; applyPrefs(); sync(); render(); }, hapticTap: 'select' }));
+  // items are drawn with a different sticker edge on dark, so the pages are drawn again
+  $$('[data-theme-opt]', c).forEach((b) => press(b, { tap: () => { prefs.theme = b.dataset.themeOpt; applyPrefs(); sync(); }, hapticTap: 'select' }));
+  press($('[data-a=tint]', c), { tap: () => { prefs.tint = !prefs.tint; applyPrefs(); sync(); }, hapticTap: 'select' });
   sync();
+  press($('[data-a=mixrows]', c), { tap: () => openMixRows() });
   press($('[data-a=exp]', c), { tap: exportData });
-  press($('[data-a=imp]', c), { tap: () => { const f = $('#file-import'); f.value = ''; f.onchange = () => f.files[0] && importData(f.files[0]).then(() => s.close()); f.click(); } });
+  press($('[data-a=imp]', c), { tap: () => { const f = $('#file-import'); f.value = ''; f.onchange = () => f.files[0] && importData(f.files[0]); f.click(); } });
   press($('[data-a=wipe]', c), { tap: async () => {
-    s.close();
-    if (!(await confirmSheet('Clear everything?', 'All pieces and looks will be deleted.', 'Clear'))) return;
+    if (!(await confirmSheet('Clear everything?', 'All items and looks will be deleted.', 'Clear'))) return;
     await db.clear('items'); await db.clear('outfits');
     state.items = []; state.outfits = []; resetMix(); imgCache.clear(); resetClosetFilters(); render(); toast('Cleared');
   } });
+  return c;
 }
 
 async function exportData() {
@@ -2611,7 +3040,7 @@ async function importData(file) {
     for (const it of data.items || []) { if ((data.version || 1) < 2) toOuter(it); await db.put('items', it); }
     for (const o of data.outfits || []) await db.put('outfits', o);
     await load(); render();
-    haptic('success'); toast(`Restored ${data.items?.length || 0} pieces`);
+    haptic('success'); toast(`Restored ${data.items?.length || 0} items`);
     edgeOlderPieces();
   } catch { haptic('warning'); toast('File could not be read'); }
 }
@@ -2680,7 +3109,7 @@ async function load() {
 function bindChrome() {
   $$('.tab[data-view]').forEach((t) => press(t, {
     tap: () => setView(t.dataset.view),
-    long: t.dataset.view === 'mix' ? null : t.dataset.view === 'stats' ? () => openPrices() : t.dataset.view === 'closet' ? (e) => contextMenu(t, 'Closet', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => { state.filterCat = k; state.filterSub = null; if (state.view !== 'closet') setView('closet'); else renderCloset(); } })), e)
+    long: t.dataset.view === 'mix' ? null : t.dataset.view === 'more' ? () => openPrices() : t.dataset.view === 'closet' ? (e) => contextMenu(t, 'Closet', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => { state.filterCat = k; state.filterSub = null; if (state.view !== 'closet') setView('closet'); else renderCloset(); } })), e)
       : (e) => contextMenu(t, 'Looks', [
         { icon: 'plus', label: 'New look', run: () => openEditor() },
         { icon: 'sparkle', label: 'Surprise me', run: surpriseLook },
@@ -2703,8 +3132,9 @@ function bindChrome() {
     ], e),
     hapticTap: null, // the menu gives its own
   });
-  press($('#settings-btn'), { tap: openSettings, long: () => setView('stats') });
+  press($('#select-btn'), { tap: () => (sel.on ? endSelect() : startSelect()), hapticTap: 'select' });
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && sel.on && !stack.length && !menuOpen) { endSelect(); return; }
     if (e.key !== 'Escape' || !stack.length) return;
     const top = stack[stack.length - 1];
     (top.dismiss || top.close)(); // a sheet can ask before it closes (the batch sheet does)
@@ -2717,7 +3147,7 @@ function bindChrome() {
  */
 function closetAction(name) {
   if (stack.length || menuOpen) return false;
-  const run = { add: () => openAdd(), look: () => openEditor(), mix: () => setView('mix'), stats: () => setView('stats'), closet: () => setView('closet'), looks: () => setView('outfits') }[name];
+  const run = { add: () => openAdd(), look: () => openEditor(), surprise: () => surpriseLook(), mix: () => setView('mix'), more: () => setView('more'), stats: () => setView('more'), closet: () => setView('closet'), looks: () => setView('outfits') }[name];
   if (!run) return false;
   run();
   return true;
@@ -2728,6 +3158,27 @@ function actionFromHash() {
   if (!m) return;
   history.replaceState(null, '', location.pathname + location.search); // once only
   closetAction(m[1]);
+}
+
+/** Items sway a little while the closet scrolls, and settle when it stops. */
+function swayOnScroll() {
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  let lastY = window.scrollY, lastT = performance.now(), cur = 0, target = 0, raf = 0;
+  const root = $('#view-closet'); // only the closet's tiles are restyled each frame, not the whole page
+  const tick = () => {
+    cur += (target - cur) * 0.18;
+    target *= 0.86; // the push fades: it springs back when the scrolling stops
+    root.style.setProperty('--sway', cur.toFixed(3) + 'deg');
+    raf = Math.abs(cur) > 0.02 || Math.abs(target) > 0.02 ? requestAnimationFrame(tick) : 0;
+    if (!raf) root.style.setProperty('--sway', '0deg');
+  };
+  window.addEventListener('scroll', () => {
+    if (state.view !== 'closet') return;
+    const now = performance.now(), dy = window.scrollY - lastY, dt = Math.max(8, now - lastT);
+    lastY = window.scrollY; lastT = now;
+    target = Math.max(-4, Math.min(4, target + (dy / dt) * 1.6));
+    if (!raf) raf = requestAnimationFrame(tick);
+  }, { passive: true });
 }
 
 function quickPick(kind) {
@@ -2748,6 +3199,9 @@ function quickPick(kind) {
   bindChrome();
   await load();
   render();
+  if (nativeChrome()) document.documentElement.classList.add('native-bar');
+  swayOnScroll();
+  postChrome();
   setTimeout(edgeOlderPieces, 900);
   actionFromHash();
   window.addEventListener('hashchange', actionFromHash);
