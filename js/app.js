@@ -427,6 +427,8 @@ function sheet(content, { full = false, onClose } = {}) {
   const keyed = opener?.closest?.('#views [data-id]');
   const openerKey = keyed ? `[data-id="${CSS.escape(keyed.dataset.id)}"]` : null;
   const openerPart = keyed && opener !== keyed ? [...opener.classList].map((c) => '.' + CSS.escape(c)).join('') : '';
+  // a page's own button (Rows on Mix, Mix rows on More) is drawn again too: find it by what it does
+  const openerAct = !keyed && opener?.dataset?.a && opener.closest?.('#views') ? `#views .view.active [data-a="${CSS.escape(opener.dataset.a)}"]` : null;
   layer.append(scrim, el);
   requestAnimationFrame(() => requestAnimationFrame(() => { scrim.classList.add('show'); el.classList.add('show'); }));
   // only take focus if nothing inside asked for it already
@@ -446,7 +448,7 @@ function sheet(content, { full = false, onClose } = {}) {
       onClose?.();
       // hand focus back to whatever opened the sheet, unless closing it already moved focus somewhere
       const again = openerKey && $(`#views ${openerKey}`);
-      const back = opener && opener !== document.body && document.contains(opener) ? opener : again && ((openerPart && $(openerPart, again)) || again.querySelector('button') || again);
+      const back = opener && opener !== document.body && document.contains(opener) ? opener : (again && ((openerPart && $(openerPart, again)) || again.querySelector('button') || again)) || (openerAct && $(openerAct));
       if ((inside || document.activeElement === document.body) && back) back.focus?.({ preventScroll: true });
     },
   };
