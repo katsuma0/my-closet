@@ -44,6 +44,7 @@ const ICON = {
   search: '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/>',
   share: '<path d="M12 15V4M8 8l4-4 4 4M6 12v7h12v-7"/>',
   swap: '<path d="M7 7h11l-3-3M17 17H6l3 3"/>',
+  minus: '<path d="M6 12h12"/>',
   filter: '<path d="M4 7h16M7 12h10M10 17h4"/>',
   chev: '<path d="m6 9 6 6 6-6"/>',
   drop: '<path d="M12 3.5c3 3.6 5.5 6.6 5.5 10a5.5 5.5 0 0 1-11 0c0-3.4 2.5-6.4 5.5-10z"/>',
@@ -69,17 +70,16 @@ const state = {
 
 /* Appearance choices. Kept in localStorage so index.html can apply them before first paint. */
 const PREFS_KEY = 'closet.prefs';
-const prefs = { theme: 'system', contrast: false };
+const prefs = { theme: 'system' };
 try {
   const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
   if (['system', 'light', 'dark'].includes(saved.theme)) prefs.theme = saved.theme;
-  prefs.contrast = !!saved.contrast;
 } catch { /* private mode: defaults */ }
 const isDark = () => prefs.theme === 'dark' || (prefs.theme === 'system' && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
 function applyPrefs(save = true) {
   const r = document.documentElement;
   if (prefs.theme === 'system') r.removeAttribute('data-theme'); else r.dataset.theme = prefs.theme;
-  r.toggleAttribute('data-contrast', false); if (prefs.contrast) r.dataset.contrast = 'more';
+  r.removeAttribute('data-contrast'); // an option that no longer exists
   document.querySelector('meta[name=theme-color]')?.setAttribute('content', isDark() ? '#1b1917' : '#f6f3ee');
   if (save) { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* not stored, still applied */ } }
 }
@@ -193,6 +193,7 @@ function suggestLook(seeds = []) {
  * `list` is [{ cat, ar }] (ar = the picture's height / width when known); `ratio` is the board's height / width.
  * Returns { at: [{ x, y, w, rot }] in the same order, order: indexes from the back of the pile to the front }.
  */
+let lastStyle = -1;
 function layoutLook(list, ratio = 1.5) {
   const by = { top: [], outer: [], bottom: [], shoes: [], acc: [] };
   list.forEach((e, i) => (by[e.cat] || by.acc).push(i));
@@ -203,6 +204,17 @@ function layoutLook(list, ratio = 1.5) {
   const jit = (a) => (Math.random() * 2 - 1) * a;
   const at = new Array(list.length);
   const main = ['top', 'bottom', 'shoes'].filter((k) => by[k].length);
+  // each Arrange picks a way of laying things out (never the same twice running): a straight column, a zigzag
+  // down the board, or a lean to one side; then every piece gets its own nudge, tilt and a little size change
+  let style = Math.floor(Math.random() * 3);
+  if (style === lastStyle) style = (style + 1 + Math.floor(Math.random() * 2)) % 3;
+  lastStyle = style;
+  const flipSide = Math.random() < 0.5 ? -1 : 1;
+  const swing = 0.07 + Math.random() * 0.05;
+  const shift = (b, nb) => (style === 1 ? (b % 2 ? 1 : -1) * swing * flipSide : style === 2 ? (b - (nb - 1) / 2) * swing * 1.3 * flipSide : 0);
+  const grow = () => 0.9 + Math.random() * 0.18;
+  // keeps a piece of width w on the board, with a small margin
+  const inside = (x, w) => Math.max(0.03 + w / 2, Math.min(0.97 - w / 2, x));
   const hasAcc = by.acc.length > 0;
   if (!main.length) {
     // accessories only: a loose grid
@@ -219,26 +231,30 @@ function layoutLook(list, ratio = 1.5) {
   const total = main.reduce((t, k) => t + share[k], 0);
   const left = hasAcc ? 0.2 : 0.1, right = hasAcc ? 0.8 : 0.9;
   let y = 0.05;
-  for (const k of main) {
+  main.forEach((k, b) => {
     const band = 0.9 * share[k] / total, cy = y + band / 2;
     y += band;
     const ids = by[k], n = ids.length, room = (right - left) / n;
+    const dx = shift(b, main.length);
     ids.forEach((i, j) => {
       const ar = list[i].ar || AR[kind(i) || k];
       const wide = kind(i) === 'outer' ? base.top * 1.06 : base[k];
       // as wide as its kind usually is, but never so tall that it leaves its band by much, nor wider than its share of the row
-      const w = Math.max(0.15, Math.min(wide * (hasAcc ? 0.92 : 1), n > 1 ? room * 1.22 : 1, band * (k === 'bottom' ? 1.3 : 1.12) * ratio / ar));
-      const x = n === 1 ? (left + right) / 2 : left + room * (j + 0.5);
-      at[i] = { x: x + jit(0.02), y: cy + (n > 1 ? (j % 2 ? 0.018 : -0.018) : 0) + jit(0.012), w, rot: jit(k === 'shoes' ? 8 : 5) };
+      const w = Math.max(0.15, Math.min(0.6, Math.min(wide * (hasAcc ? 0.92 : 1), n > 1 ? room * 1.22 : 1, band * (k === 'bottom' ? 1.3 : 1.12) * ratio / ar) * grow()));
+      const x0 = n === 1 ? (left + right) / 2 : left + room * (j + 0.5);
+      const x = inside(x0 + dx + jit(n > 1 ? 0.03 : 0.05), w);
+      at[i] = { x, y: cy + (n > 1 ? (j % 2 ? 0.022 : -0.022) : 0) + jit(0.022), w, rot: jit(k === 'shoes' ? 14 : 9) };
     });
-  }
+  });
   // accessories: alternate sides, top to bottom, clear of the foot of the board when shoes are there
   const floor = by.shoes.length ? 0.7 : 0.86;
   const slots = [[1, 0.42], [0, 0.5], [1, 0.14], [0, 0.16], [1, floor], [0, floor + 0.04], [1, 0.28], [0, 0.33]];
+  // which side and height each accessory takes changes from one Arrange to the next
+  const start = Math.floor(Math.random() * slots.length), mirror = Math.random() < 0.5;
   by.acc.forEach((i, j) => {
-    const [side, sy] = slots[j % slots.length], lap = Math.floor(j / slots.length);
-    const w = Math.min(by.acc.length <= 2 ? 0.25 : 0.21, 0.2 * ratio / (list[i].ar || AR.acc));
-    at[i] = { x: (side ? 0.87 : 0.13) + (side ? -1 : 1) * lap * 0.08 + jit(0.015), y: Math.min(0.92, sy + lap * 0.06) + jit(0.02), w, rot: jit(11) };
+    const [side0, sy] = slots[(start + j) % slots.length], side = mirror ? 1 - side0 : side0, lap = Math.floor(j / slots.length);
+    const w = Math.min(by.acc.length <= 2 ? 0.25 : 0.21, 0.2 * ratio / (list[i].ar || AR.acc)) * grow();
+    at[i] = { x: inside((side ? 0.86 : 0.14) + (side ? -1 : 1) * lap * 0.08 + jit(0.03), w), y: Math.max(0.08, Math.min(0.92, sy + lap * 0.06 + jit(0.04))), w, rot: jit(16) };
   });
   return { at, order: [...by.bottom, ...by.top, ...by.shoes, ...by.acc] }; // by.top already ends with the outerwear
 }
@@ -1799,32 +1815,14 @@ function renderOutfits() {
     const grid = h('<div class="looks"></div>');
     looks.forEach((o, idx) => {
       const cols = outfitColors(o);
+      const n = wears(o);
       const card = h(`<div class="look" data-id="${o.id}" style="animation-delay:${Math.min(idx, 10) * 40}ms">
-        <button class="look-open"><span class="thumb-wrap" style="background:${o.board || 'var(--card)'}"><img class="thumb" src="${o.thumb || ''}" alt="" /></span>
-        <span class="meta"><span class="name">${esc(o.name)}</span><span class="dots">${cols.slice(0, 5).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>
-        ${heartBtn(o)}<button class="tick"></button></div>`);
-      const open = $('.look-open', card), tick = $('.tick', card);
-      const paintTick = () => {
-        const n = wears(o);
-        tick.innerHTML = `${svg('check')}${n ? `<span>${n}</span>` : ''}`;
-        tick.setAttribute('aria-label', n ? `Worn ${n} time${n === 1 ? '' : 's'}. Add one` : 'Worn. Add one');
-      };
-      paintTick();
-      press(open, { tap: () => openEditor(o), long: (e) => lookMenu(o, card, e, paintTick) });
+        <button class="look-open"${n ? ` aria-label="${esc(o.name)}, worn ${n} time${n === 1 ? '' : 's'}"` : ''}><span class="thumb-wrap" style="background:${o.board || 'var(--card)'}"><img class="thumb" src="${o.thumb || ''}" alt="" /></span>
+        <span class="meta"><span class="name">${esc(o.name)}</span><span class="sub"><span class="dots">${cols.slice(0, 5).map((c) => `<i style="background:${c}"></i>`).join('')}</span>${n ? `<span class="wn">Worn ${n}×</span>` : ''}</span></span></button>
+        ${heartBtn(o)}</div>`);
+      const open = $('.look-open', card);
+      press(open, { tap: () => openEditor(o), long: (e) => lookMenu(o, card, e) });
       bindHeart($('.heart', card), o, 'outfits', () => { if (view.outfits.fav) drawGrid(); });
-      // the ticker: each tap is one more time worn (its pieces count it too); Undo takes it back
-      press(tick, {
-        tap: async () => {
-          const t = await wearLook(o);
-          paintTick();
-          toast(`Worn ${wears(o)} time${wears(o) === 1 ? '' : 's'}`, { label: 'Undo', run: async () => { await unwearLook(o, t); paintTick(); } });
-        },
-        long: (e) => contextMenu(tick, o.name, [
-          { icon: 'plus', label: 'Add a wear', run: async () => { await wearLook(o); paintTick(); } },
-          ...(wears(o) ? [{ icon: 'undo', label: 'Remove a wear', run: async () => { await unwearLook(o); paintTick(); } }] : []),
-        ], e),
-        hapticTap: null,
-      });
       grid.append(card);
     });
     host.append(grid);
@@ -1832,11 +1830,10 @@ function renderOutfits() {
   drawGrid();
 }
 
-function lookMenu(o, card, e, after) {
+function lookMenu(o, card, e) {
   contextMenu(card, o.name, [
     { icon: 'edit', label: 'Open', run: () => openEditor(o) },
     { icon: 'heart', label: o.fav ? 'Remove favourite' : 'Favourite', run: async () => { await toggleFav(o, 'outfits'); renderOutfits(); } },
-    ...(wears(o) ? [{ icon: 'undo', label: 'Remove a wear', run: async () => { await unwearLook(o); after?.(); } }] : []),
     { icon: 'share', label: 'Share', run: () => shareLook(o) },
     { icon: 'copy', label: 'Duplicate', run: async () => {
       const copy = { ...structuredClone(o), id: uid(), name: o.name + ' ii', created: Date.now(), updated: Date.now(), worn: [], fav: false };
@@ -1849,11 +1846,14 @@ function lookMenu(o, card, e, after) {
   ], e);
 }
 
-/** One more wear of a look, counted for the look and for each of its pieces with the same moment, so it can be taken back exactly. */
-async function wearLook(o) {
-  const t = Date.now();
-  o.worn = [...(o.worn || []), t].slice(-400);
-  await db.put('outfits', o);
+/**
+ * One more wear of a look, counted for the look and for each of its pieces at the same moment, so it can be
+ * taken back exactly. `keep` false leaves the look itself unsaved (a new look being made); `t` puts back a
+ * wear that was taken away.
+ */
+async function wearLook(o, keep = true, t = Date.now()) {
+  o.worn = [...(o.worn || []), t].sort((a, b) => a - b).slice(-400);
+  if (keep) await db.put('outfits', o);
   for (const id of new Set(o.pieces.map((p) => p.itemId))) {
     const it = itemById(id);
     if (!it) continue;
@@ -1864,10 +1864,10 @@ async function wearLook(o) {
   return t;
 }
 /** Takes back a wear of a look (the given one, or the latest), and the same wear of its pieces. */
-async function unwearLook(o, t = lastWear(o)) {
+async function unwearLook(o, t = lastWear(o), keep = true) {
   if (!t || !(o.worn || []).includes(t)) return;
   o.worn = o.worn.filter((x) => x !== t);
-  await db.put('outfits', o);
+  if (keep) await db.put('outfits', o);
   for (const id of new Set(o.pieces.map((p) => p.itemId))) {
     const it = itemById(id);
     if (!it || !(it.worn || []).includes(t)) continue;
@@ -1875,6 +1875,7 @@ async function unwearLook(o, t = lastWear(o)) {
     await db.put('items', it);
   }
   haptic('light');
+  return t;
 }
 
 function surpriseLook() {
@@ -1935,7 +1936,8 @@ function openEditor(outfit = null, startIds = []) {
   const c = h(`<div class="editor">
     <div class="editor-top">
       <button class="round" data-a="back" aria-label="Back">${svg('back')}</button>
-      <input class="input" data-name value="${esc(o.name)}" maxlength="40" />
+      <input class="input" data-name value="${esc(o.name)}" maxlength="40" aria-label="Name of the look" />
+      <div class="palette-tray"><div class="pill-strip" data-in aria-label="Colours in this look"></div></div>
       <button class="round dark" data-a="save" aria-label="Save">${svg('check')}</button>
     </div>
     <div class="board"><div class="hint">Tap Add to choose pieces</div></div>
@@ -1945,7 +1947,11 @@ function openEditor(outfit = null, startIds = []) {
         <button class="tool" data-a="add"><span class="round dark">${svg('plus')}</span><small>Add</small></button>
         <button class="tool" data-a="bg" aria-expanded="false"><span class="round"><i data-bgdot></i></span><small>Background</small></button>
         <button class="tool" data-a="shuffle"><span class="round">${svg('sparkle')}</span><small>Arrange</small></button>
-        <div class="palette-tray"><div class="pill-strip" data-in aria-label="Colours in this look"></div></div>
+        <div class="tool worn-tool">
+          <span class="stepper" role="group" aria-label="Times worn">
+            <button data-a="w-minus" aria-label="Worn one time less">${svg('minus')}</button><b data-wn aria-live="polite">0</b><button data-a="w-plus" aria-label="Worn one more time">${svg('plus')}</button>
+          </span><small>Worn</small>
+        </div>
       </div>
       <div class="bar-piece" role="toolbar" aria-label="Chosen piece">
         <button class="tool" data-a="front"><span class="round">${svg('up')}</span><small>To front</small></button>
@@ -2330,7 +2336,33 @@ function openEditor(outfit = null, startIds = []) {
   });
   const onResize = () => o.pieces.forEach(place);
   window.addEventListener('resize', onResize);
-  const close0 = s.close; s.close = () => { window.removeEventListener('resize', onResize); close0(); };
+  // ----- times worn: minus and plus, each with Undo
+  const stored = () => state.outfits.find((x) => x.id === o.id);
+  const wn = $('[data-wn]', c), minus = $('[data-a=w-minus]', c);
+  let wornChanged = false;
+  const paintWorn = () => { wn.textContent = String(wears(o)); minus.disabled = !wears(o); };
+  paintWorn();
+  const sayWorn = (undo) => toast(`Worn ${wears(o)} time${wears(o) === 1 ? '' : 's'}`, { label: 'Undo', run: async () => { await undo(); paintWorn(); } });
+  // the look in storage takes the change when there is one; the open copy follows it so saving keeps it
+  async function wornStep(add, t) {
+    const s0 = stored(), target = s0 || o;
+    const at = add ? await wearLook(target, !!s0, t) : await unwearLook(target, t, !!s0);
+    if (s0) o.worn = [...(s0.worn || [])];
+    wornChanged = true;
+    paintWorn();
+    return at;
+  }
+  press($('[data-a=w-plus]', c), { tap: async () => {
+    const t = await wornStep(true);
+    sayWorn(() => wornStep(false, t));
+  }, hapticTap: null });
+  press(minus, { tap: async () => {
+    if (!wears(o)) return;
+    const t = await wornStep(false, lastWear(stored() || o));
+    if (t) sayWorn(() => wornStep(true, t));
+  }, hapticTap: null });
+
+  const close0 = s.close; s.close = () => { window.removeEventListener('resize', onResize); close0(); if (wornChanged && state.view === 'outfits') renderOutfits(); };
 }
 
 /** Height / width of the look board on this phone (measured whenever the editor opens; estimated before that). */
@@ -2544,17 +2576,14 @@ function openSettings() {
   const c = h(`<div><h2>Settings</h2>
     <div class="field"><label id="set-theme">Appearance</label><div class="seg three" role="group" aria-labelledby="set-theme">
       ${[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-theme-opt="${k}">${l}</button>`).join('')}</div></div>
-    <div class="opt" style="margin-bottom:22px"><span id="set-contrast">Higher contrast</span><button class="switch" role="switch" data-a="contrast" aria-labelledby="set-contrast"></button></div>
     <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="exp">Backup</button><button class="btn soft" data-a="imp">Restore</button></div>
     <button class="btn ghost block" data-a="wipe">Clear everything</button></div>`);
   const s = sheet(c);
   const sync = () => {
     $$('[data-theme-opt]', c).forEach((b) => { const on = b.dataset.themeOpt === prefs.theme; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
-    const b = $('[data-a=contrast]', c); b.classList.toggle('on', prefs.contrast); b.setAttribute('aria-checked', String(prefs.contrast));
   };
   // pieces are drawn with a different sticker edge on dark, so the page behind is drawn again
   $$('[data-theme-opt]', c).forEach((b) => press(b, { tap: () => { prefs.theme = b.dataset.themeOpt; applyPrefs(); sync(); render(); }, hapticTap: 'select' }));
-  press($('[data-a=contrast]', c), { tap: () => { prefs.contrast = !prefs.contrast; applyPrefs(); sync(); }, hapticTap: 'select' });
   sync();
   press($('[data-a=exp]', c), { tap: exportData });
   press($('[data-a=imp]', c), { tap: () => { const f = $('#file-import'); f.value = ''; f.onchange = () => f.files[0] && importData(f.files[0]).then(() => s.close()); f.click(); } });

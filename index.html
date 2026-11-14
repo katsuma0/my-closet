@@ -20,7 +20,6 @@
     try {
       var p = JSON.parse(localStorage.getItem('closet.prefs') || '{}'), r = document.documentElement;
       if (p.theme === 'light' || p.theme === 'dark') r.dataset.theme = p.theme;
-      if (p.contrast) r.dataset.contrast = 'more';
     } catch (e) {}
   </script>
   <link rel="stylesheet" href="css/style.css" />

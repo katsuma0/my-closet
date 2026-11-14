@@ -74,13 +74,6 @@
     color-scheme: dark;
   }
 }
-/* higher contrast: darker greys and a visible edge on every surface */
-:root[data-contrast="more"] { --ink: #1a1715; --ink-2: #48423b; --ink-3: #6b635a; --line: rgba(47, 43, 39, 0.32); --sage: #8a9c7b; --sage-deep: #5d6e53; }
-:root[data-contrast="more"][data-theme="dark"] { --ink: #ffffff; --ink-2: #dcd5cb; --ink-3: #aaa196; --line: rgba(255, 255, 255, 0.34); --sage: #b4c5a5; --sage-deep: #cddcbf; }
-@media (prefers-color-scheme: dark) {
-  :root[data-contrast="more"]:not([data-theme="light"]) { --ink: #ffffff; --ink-2: #dcd5cb; --ink-3: #aaa196; --line: rgba(255, 255, 255, 0.34); --sage: #b4c5a5; --sage-deep: #cddcbf; }
-}
-[data-contrast="more"] :is(.piece .tile, .look .thumb-wrap, .chip, .btn.soft, .round, .kv div, .value-pill, .batch-row, .pick-item, .price-total, .stage, .seg, .b-cats, .input, .pr-input, .opt) { box-shadow: 0 0 0 1px var(--line); }
 /* a clear ring for keyboard and switch-control users */
 :focus-visible { outline: 2px solid var(--sage-deep); outline-offset: 2px; }
 .sheet:focus, .input:focus-visible, .pr-input input:focus-visible { outline: none; }
@@ -149,8 +142,8 @@ main { padding: 4px 18px calc(130px + var(--safe-b)); }
 .chip.add { background: transparent; border: 1px dashed var(--ink-3); color: var(--ink-2); }
 .chip svg { width: 16px; height: 16px; }
 /* the category row: plain words, the current one in a soft pill */
-.chips.nav { gap: 2px; }
-.chips.nav .chip { background: transparent; padding: 0 14px; }
+.chips.nav { gap: 8px; }
+.chips.nav .chip { padding: 0 16px; }
 .chips.nav .chip.active { background: var(--ink); color: var(--bg); }
 .subchips { overflow: hidden; transition: max-height .45s var(--ease), opacity .35s var(--ease); max-height: 0; opacity: 0; }
 .subchips.open { max-height: 60px; opacity: 1; }
@@ -207,8 +200,6 @@ main { padding: 4px 18px calc(130px + var(--safe-b)); }
 .heart svg { width: 17px; height: 17px; }
 .heart[aria-pressed="true"] { color: var(--sage-deep); }
 .heart[aria-pressed="true"] svg { fill: currentColor; }
-.tick { position: absolute; z-index: 1; right: 8px; top: calc(125cqw - 38px); min-width: 34px; height: 30px; padding: 0 10px; border-radius: 999px; display: flex; align-items: center; justify-content: center; gap: 5px; background: var(--card); color: var(--ink-2); font: 500 calc(13px * var(--ts)) var(--sans); box-shadow: 0 0 0 1px var(--line); }
-.tick svg { width: 14px; height: 14px; stroke-width: 2; }
 .piece .tile { display: block; position: relative; aspect-ratio: 4 / 5; background: var(--card); border-radius: var(--r); }
 .piece .sticker {
   position: absolute; inset: 12%; width: 76%; height: 76%; object-fit: contain;
@@ -481,7 +472,16 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
 .tool { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 52px; flex: none; color: var(--ink-2); }
 .tool small { font-size: calc(11px * var(--ts)); letter-spacing: 0.01em; white-space: nowrap; }
 .tool [data-bgdot] { width: 22px; height: 22px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
-.editor-bar .palette-tray { align-self: flex-start; margin-top: 8px; }
+.editor-top .palette-tray { flex: none; width: 68px; margin: 0; }
+.editor-top .pill-strip { height: 22px; border-radius: 11px; }
+.worn-tool { margin-left: auto; }
+.stepper { display: flex; align-items: center; height: 46px; border-radius: 999px; background: var(--soft); color: var(--ink-2); }
+.stepper button { width: 40px; height: 46px; display: grid; place-items: center; color: var(--ink-2); }
+.stepper button:disabled { opacity: .35; }
+.stepper button svg { width: 17px; height: 17px; }
+.stepper b { min-width: 20px; text-align: center; font: 500 calc(19px * var(--ts))/1 var(--serif); color: var(--ink); }
+.look .sub { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.look .wn { flex: none; font-size: calc(12px * var(--ts)); color: var(--ink-2); }
 /* the tray above the toolbar: background colours, or pieces to swap in */
 .ed-tray { position: absolute; left: 0; right: 0; bottom: 86px; z-index: 3; display: flex; gap: 10px; align-items: center; padding: 12px 14px; border-radius: 24px; background: var(--pop); box-shadow: var(--shadow-md); overflow-x: auto; scrollbar-width: none; opacity: 0; transform: translateY(10px); pointer-events: none; transition: opacity .3s, transform .45s var(--ease); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
 .ed-tray::-webkit-scrollbar { display: none; }
