@@ -8,7 +8,8 @@ import WebKit
 /// - The page posts {type: 'state', tab: 'closet' | 'mix' | 'looks' | 'more', bar: true | false}
 ///   to the "chrome" message handler on load and whenever its page, a sheet or a menu changes.
 ///   bar false means something covers the page (a sheet, an editor, a menu): the bar and the + step aside.
-/// - A tab tap calls window.closetAction(tab). The + menu calls closetAction('add' | 'look' | 'surprise').
+/// - A tab tap calls window.closetAction(tab). A tap on the + calls closetAction('create') (the page's big Create
+///   sheet); held down, the + shows a quick menu that calls closetAction('add' | 'look' | 'surprise').
 /// - The page keeps its content clear of the bar using the CSS variable --native-bar (the bar's height
 ///   plus the bottom safe area, in CSS px, which are points here) and the class "native-bar" on <html>.
 /// - This side also watches <html data-theme> with its own script and posts {type: 'theme'}, so the bar,
@@ -106,10 +107,11 @@ final class AppViewController: UIViewController, UITabBarDelegate, WKScriptMessa
         plusButton.translatesAutoresizingMaskIntoConstraints = false
         plusButton.configuration = Self.plusConfiguration()
         plusButton.menu = makeMenu()
-        plusButton.showsMenuAsPrimaryAction = true   // a tap opens the menu (on touch down, like system menus)
+        plusButton.showsMenuAsPrimaryAction = false  // a tap opens the page's Create sheet; a long press, the menu
+        plusButton.addAction(UIAction { [weak self] _ in self?.callAction("create") }, for: .primaryActionTriggered)
         plusButton.isPointerInteractionEnabled = true
         plusButton.accessibilityLabel = "Add"
-        plusButton.accessibilityHint = "Add clothes, create a look, or get a surprise look."
+        plusButton.accessibilityHint = "Add clothes or make a look. Touch and hold for a quick menu."
 
         if !glass {
             // Classic bars: one strip of the system's own bar material and hairline under both the
