@@ -213,6 +213,20 @@ function layoutLook(list, ratio = 1.5) {
   by.top = [...by.top, ...by.outer];
   const jit = (a) => (Math.random() * 2 - 1) * a;
   const at = new Array(list.length);
+  const arOf = (i) => list[i].ar || AR[list[i].cat] || 1;
+  // however many items there are, together they fill about half to three fifths of the board: each grows
+  // about its own centre, and stays on the board
+  const fill = () => {
+    const area = at.reduce((sum, a, i) => sum + a.w * a.w * arOf(i) / ratio, 0);
+    const grow = Math.max(1, Math.min(1.75, Math.sqrt((0.55 + Math.random() * 0.05) / Math.max(0.01, area))));
+    if (grow < 1.02) return;
+    at.forEach((a, i) => {
+      a.w = Math.min(0.86, a.w * grow);
+      a.x = Math.max(0.03 + a.w / 2, Math.min(0.97 - a.w / 2, a.x));
+      const hh = a.w * arOf(i) / ratio / 2; // half its height, in board heights
+      a.y = hh < 0.47 ? Math.max(0.03 + hh, Math.min(0.97 - hh, a.y)) : 0.5;
+    });
+  };
   const main = ['top', 'bottom', 'shoes'].filter((k) => by[k].length);
   // each Arrange picks a way of laying things out (never the same twice running): a straight column, a zigzag
   // down the board, or a lean to one side; then every piece gets its own nudge, tilt and a little size change
@@ -236,6 +250,7 @@ function layoutLook(list, ratio = 1.5) {
       const w = Math.min(0.44, 0.78 / cols, (0.7 / rows) * ratio / (list[i].ar || AR.acc));
       at[i] = { x: 0.1 + cx * 0.8 + jit(0.02), y: 0.1 + cy * 0.8 + jit(0.02), w, rot: jit(9) };
     });
+    fill();
     return { at, order: [...by.acc] };
   }
   // bands down the board for the clothes that are there; they keep to a centre column when accessories need the edges
@@ -281,6 +296,7 @@ function layoutLook(list, ratio = 1.5) {
     const w = Math.min(by.acc.length <= 2 ? 0.25 : 0.21, 0.2 * ratio / (list[i].ar || AR.acc)) * grow();
     at[i] = { x: inside((side ? 0.86 : 0.14) + (side ? -1 : 1) * lap * 0.08 + jit(0.035 * loose), w), y: Math.max(0.08, Math.min(0.92, sy + lap * 0.06 + jit(0.05 * loose))), w, rot: jit(18 * loose) };
   });
+  fill();
   return { at, order: [...by.bottom, ...by.top, ...by.shoes, ...by.acc] }; // by.top already ends with the outerwear
 }
 /** The same, for pieces by id (their pictures give the real proportions). Returns pieces ready for a look, back to front. */
@@ -565,8 +581,27 @@ function postChrome() {
   document.body.classList.toggle('choosing', sel.on);
   $('#tabbar').inert = sel.on; // out of sight while choosing: out of reach too
 }
+// While a sheet or a menu is open the page under it does not scroll (a short sheet, or a drag past the end of a
+// long one, would otherwise move it): the page is pinned where it was and put back exactly there afterwards.
+let lockY = null, scrollQuietUntil = 0;
+function lockScroll(on) {
+  const b = document.body;
+  if (on && lockY === null) {
+    lockY = window.scrollY;
+    Object.assign(b.style, { position: 'fixed', top: `-${lockY}px`, left: '0', right: '0' });
+    document.documentElement.classList.add('locked');
+  } else if (!on && lockY !== null) {
+    const y = lockY;
+    lockY = null;
+    Object.assign(b.style, { position: '', top: '', left: '', right: '' });
+    document.documentElement.classList.remove('locked');
+    scrollQuietUntil = performance.now() + 150; // the jump back is not a scroll to react to
+    window.scrollTo({ top: y, behavior: 'instant' });
+  }
+}
 function syncTabbar() {
   postChrome();
+  lockScroll(stack.length > 0 || menuOpen);
   $('#tabbar').classList.toggle('hidden', stack.some((s) => s.el.classList.contains('full')));
   // only the sheet on top (or an open menu) can be reached, by touch, keyboard or screen reader
   $('#app').inert = stack.length > 0 || menuOpen;
@@ -755,7 +790,7 @@ const typeNoun = (sub) => {
 function autoName(cat, sub, brand) {
   const noun = sub ? typeNoun(sub) : (CAT_NOUN[cat] || 'Item');
   const b = (brand || '').trim();
-  return b ? `${b} ${noun}` : noun;
+  return b ? `${b.charAt(0).toUpperCase()}${b.slice(1)} ${noun}` : noun;
 }
 /** The names the app used to make, from a colour it often got wrong: such a name was never typed by anyone. */
 function oldAutoName(colors, cat, sub) {
@@ -863,7 +898,7 @@ function renderCloset() {
       const card = h(`<div class="piece" data-id="${it.id}" style="animation-delay:${Math.min(idx, 12) * 35}ms;--d:${[1, -0.8, 0.6, -1.1, 0.9, -0.7][idx % 6]}">
         <button class="piece-open"><span class="tile"${prefs.tint ? ` style="background:${tileTint(it)}"` : ''}><img class="sticker" src="${stickerOf(it)}" data-st="${it.id}" alt="" loading="lazy" /></span>
         <span class="meta"><span class="name">${esc(it.name)}</span><span class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>
-        ${heartBtn(it)}</div>`);
+        ${it.fav ? heartBtn(it) : ''}</div>`);
       const open = $('.piece-open', card);
       tintOutline($('.sticker', card), it);
       if (sel.on) {
@@ -876,7 +911,8 @@ function renderCloset() {
           selectBar(); syncSelectTitle();
         }, hapticTap: 'select' });
       } else press(open, { tap: () => openDetail(it), long: (e) => itemMenu(it, card, e) });
-      bindHeart($('.heart', card), it, 'items', () => { if (view.closet.fav) drawGrid(); });
+      const heart = $('.heart', card); // shown only on favourites; tapping it takes the favourite away
+      if (heart) bindHeart(heart, it, 'items', () => { if (!it.fav) { heart.classList.add('gone'); setTimeout(() => heart.remove(), 260); } if (view.closet.fav) drawGrid(); });
       grid.append(card);
     });
     host.append(grid);
@@ -1128,14 +1164,16 @@ const itemWords = (i) => [i.name, i.brand, i.sub, i.notes, CATS[i.cat]?.label, .
 
 /* ---------- types: which types each category offers (More > Types), and the user's own ---------- */
 const TYPES_KEY = 'closet.types';
-const typePrefs = { hidden: {}, custom: {} }; // per category: built-in types switched off, and types the user added
-try { const t = JSON.parse(localStorage.getItem(TYPES_KEY) || '{}'); typePrefs.hidden = t.hidden || {}; typePrefs.custom = t.custom || {}; } catch { /* the defaults */ }
+// per category: built-in types switched off, built-in types deleted, and types the user added
+const typePrefs = { hidden: {}, removed: {}, custom: {} };
+try { const t = JSON.parse(localStorage.getItem(TYPES_KEY) || '{}'); typePrefs.hidden = t.hidden || {}; typePrefs.removed = t.removed || {}; typePrefs.custom = t.custom || {}; } catch { /* the defaults */ }
 const saveTypes = () => { try { localStorage.setItem(TYPES_KEY, JSON.stringify(typePrefs)); } catch { /* kept for this visit */ } };
 const isOwnType = (cat, t) => !CATS[cat].subs.includes(t);
 /** The types a category offers: built-in and own, without those switched off (`keep` always stays: the one in use). */
 function typesFor(cat, keep = null, all = false) {
   const own = [...(typePrefs.custom[cat] || []), ...state.items.filter((i) => i.cat === cat && i.sub && isOwnType(cat, i.sub)).map((i) => i.sub)];
-  const list = [...new Set([...CATS[cat].subs, ...own])];
+  const gone = new Set(typePrefs.removed[cat] || []);
+  const list = [...new Set([...CATS[cat].subs.filter((t) => !gone.has(t) || t === keep), ...own])];
   const off = new Set(typePrefs.hidden[cat] || []);
   return all ? list : list.filter((t) => !off.has(t) || t === keep);
 }
@@ -1145,16 +1183,23 @@ function addType(cat, typed) {
   if (!t) return null;
   const have = typesFor(cat, null, true).find((x) => x.toLowerCase() === t.toLowerCase());
   if (have) { typePrefs.hidden[cat] = (typePrefs.hidden[cat] || []).filter((x) => x !== have); saveTypes(); return have; }
+  const back = CATS[cat].subs.find((x) => x.toLowerCase() === t.toLowerCase()); // a deleted built-in type, typed again
+  if (back) { typePrefs.removed[cat] = (typePrefs.removed[cat] || []).filter((x) => x !== back); saveTypes(); return back; }
   typePrefs.custom[cat] = [...(typePrefs.custom[cat] || []), t];
   saveTypes();
   return t;
 }
-/** Deletes an own type: the items that had it keep their place, without a type. Returns true if it went. */
-async function deleteType(cat, t) {
-  const using = state.items.filter((i) => i.cat === cat && i.sub === t);
-  if (!(await confirmSheet(`Delete the type ${t}?`, using.length ? `${using.length} item${using.length === 1 ? '' : 's'} will have no type.` : '', 'Delete'))) return false;
-  typePrefs.custom[cat] = (typePrefs.custom[cat] || []).filter((x) => x !== t);
-  typePrefs.hidden[cat] = (typePrefs.hidden[cat] || []).filter((x) => x !== t);
+/** Deletes types ([cat, type] pairs), own or built-in: the items that had one keep their place, without a type. */
+async function deleteTypes(pairs) {
+  const using = state.items.filter((i) => pairs.some(([c, t]) => i.cat === c && i.sub === t));
+  const what = pairs.length === 1 ? `the type ${pairs[0][1]}` : `${pairs.length} types`;
+  if (!(await confirmSheet(`Delete ${what}?`, using.length ? `${using.length} item${using.length === 1 ? '' : 's'} will have no type.` : '', 'Delete'))) return false;
+  for (const [cat, t] of pairs) {
+    if (isOwnType(cat, t)) typePrefs.custom[cat] = (typePrefs.custom[cat] || []).filter((x) => x !== t);
+    else typePrefs.removed[cat] = [...new Set([...(typePrefs.removed[cat] || []), t])];
+    typePrefs.hidden[cat] = (typePrefs.hidden[cat] || []).filter((x) => x !== t);
+    if (state.filterSub === t) state.filterSub = null;
+  }
   saveTypes();
   for (const it of using) {
     const auto = it.name === autoName(it.cat, it.sub, it.brand);
@@ -1162,16 +1207,56 @@ async function deleteType(cat, t) {
     if (auto) it.name = autoName(it.cat, null, it.brand);
     await db.put('items', it);
   }
-  if (state.filterSub === t) state.filterSub = null;
-  haptic('success'); toast('Type deleted');
+  haptic('success'); toast(pairs.length === 1 ? 'Type deleted' : 'Types deleted');
   render();
   return true;
 }
-/** More > Types: tap a type to show or hide it; own types have a delete button; each category can take new ones. */
+const deleteType = (cat, t) => deleteTypes([[cat, t]]);
+/**
+ * More > Types: tap a type to show or hide it; each category can take new ones. Select picks several at once,
+ * to show, hide or delete them (built-in types too; Reset brings those back).
+ */
 function openTypes() {
-  const c = h(`<div class="types-ed"><h2>Types</h2><p class="sub">Choose the types each category offers when you add or edit an item. Your own types can be deleted.</p>
-    <div data-cats></div><button class="btn sage block" data-a="done">Done</button></div>`);
+  let choosing = false;
+  const picked = new Set(); // "cat|type"
+  const c = h(`<div class="types-ed"><div class="ty-head"><h2>Types</h2><button class="text-btn" data-a="choose" aria-pressed="false">Select</button></div>
+    <div data-cats></div>
+    <div class="ty-bar" role="toolbar" aria-label="Chosen types" hidden>
+      <button class="btn soft" data-a="show">${svg('check')}<span>Show</span></button>
+      <button class="btn soft" data-a="hide">${svg('close')}<span>Hide</span></button>
+      <button class="btn danger" data-a="del">${svg('trash')}<span>Delete</span></button>
+    </div>
+    <div class="row-btns" data-a="end"><button class="btn soft" data-a="reset">Reset</button><button class="btn sage" data-a="done">Done</button></div></div>`);
   const s = sheet(c, { onClose: () => render() });
+  const bar = $('.ty-bar', c), end = $('[data-a=end]', c), chooseBtn = $('[data-a=choose]', c);
+  const syncBar = () => {
+    bar.hidden = !choosing; end.hidden = choosing;
+    chooseBtn.textContent = choosing ? 'Done' : 'Select';
+    chooseBtn.setAttribute('aria-pressed', String(choosing));
+    c.classList.toggle('choosing', choosing);
+    $$('button', bar).forEach((b) => b.classList.toggle('off', !picked.size));
+  };
+  const chosenPairs = () => [...picked].map((k) => { const i = k.indexOf('|'); return [k.slice(0, i), k.slice(i + 1)]; });
+  press(chooseBtn, { tap: () => { choosing = !choosing; picked.clear(); syncBar(); draw(); }, hapticTap: 'select' });
+  const showHide = (show) => {
+    if (!picked.size) { haptic('light'); toast('Choose types first'); return; }
+    for (const [cat, t] of chosenPairs()) {
+      const off = new Set(typePrefs.hidden[cat] || []);
+      if (show) off.delete(t); else off.add(t);
+      typePrefs.hidden[cat] = [...off];
+    }
+    saveTypes(); haptic('success'); picked.clear(); syncBar(); draw();
+  };
+  press($('[data-a=show]', bar), { tap: () => showHide(true), hapticTap: null });
+  press($('[data-a=hide]', bar), { tap: () => showHide(false), hapticTap: null });
+  press($('[data-a=del]', bar), { tap: async () => {
+    if (!picked.size) { haptic('light'); toast('Choose types first'); return; }
+    if (await deleteTypes(chosenPairs())) { picked.clear(); syncBar(); draw(); }
+  }, hapticTap: null });
+  press($('[data-a=reset]', c), { tap: () => {
+    typePrefs.hidden = {}; typePrefs.removed = {};
+    saveTypes(); haptic('success'); toast('All built-in types are back'); draw();
+  }, hapticTap: null });
   const draw = (focusSel = null) => {
     const host = $('[data-cats]', c);
     host.innerHTML = '';
@@ -1181,15 +1266,16 @@ function openTypes() {
       const w = $('.wrap-chips', sec);
       typesFor(cat, null, true).forEach((t) => {
         const own = isOwnType(cat, t), on = !off.has(t);
-        const chip = h(`<span class="ty-chip${on ? ' on' : ''}"><button class="ty-t" aria-pressed="${on}" data-t="${esc(cat + '|' + t)}">${svg('check')}<span>${esc(t)}</span></button>${own ? `<button class="ty-x" aria-label="Delete the type ${esc(t)}">${svg('close')}</button>` : ''}</span>`);
+        const key = cat + '|' + t, isPicked = picked.has(key);
+        const chip = h(`<span class="ty-chip${on ? ' on' : ''}${own ? ' own' : ''}${isPicked ? ' picked' : ''}"><button class="ty-t" aria-pressed="${choosing ? isPicked : on}" data-t="${esc(key)}"${choosing ? ` aria-label="${esc(t)}${on ? '' : ', hidden'}"` : ''}>${svg('check')}<span>${esc(t)}</span></button></span>`);
         press($('.ty-t', chip), { tap: () => {
-          typePrefs.hidden[cat] = on ? [...off, t] : [...off].filter((x) => x !== t);
-          saveTypes(); draw(`[data-t="${CSS.escape(cat + '|' + t)}"]`);
+          if (choosing) { if (isPicked) picked.delete(key); else picked.add(key); syncBar(); }
+          else { typePrefs.hidden[cat] = on ? [...off, t] : [...off].filter((x) => x !== t); saveTypes(); }
+          draw(`[data-t="${CSS.escape(key)}"]`);
         }, hapticTap: 'select' });
-        if (own) press($('.ty-x', chip), { tap: async () => { if (await deleteType(cat, t)) draw(); } });
         w.append(chip);
       });
-      const add = h(`<button class="chip small add ty-add">${svg('plus')}<span>Add</span></button>`);
+      const add = h(`<button class="chip small add ty-add"${choosing ? ' hidden' : ''}>${svg('plus')}<span>Add</span></button>`);
       press(add, { tap: () => {
         const inp = h(`<input class="input ty-in" placeholder="New type" maxlength="20" aria-label="New ${esc(CATS[cat].label.toLowerCase())} type" />`);
         add.replaceWith(inp); inp.focus();
@@ -1231,7 +1317,7 @@ function rememberBrand(b) {
  */
 function brandField(get, set, { keepOption = false } = {}) {
   const f = h(`<div class="field"><label for="brand-${++sheetSeq}">Brand</label><div class="select-wrap"><select class="input" id="brand-${sheetSeq}"></select>${svg('chev')}</div>
-    <div class="brand-new" hidden><input class="input" placeholder="Brand name" maxlength="40" autocomplete="off" aria-label="New brand" /><button class="btn sage" type="button">Add</button></div></div>`);
+    <div class="brand-new" hidden><input class="input" placeholder="Brand name" maxlength="40" autocomplete="off" autocapitalize="words" aria-label="New brand" /><button class="btn sage" type="button">Add</button></div></div>`);
   const sel = $('select', f), box = $('.brand-new', f), inp = $('input', box);
   const fill = () => {
     const cur = get();
@@ -1388,8 +1474,6 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
       <button class="chip" data-a="bg" role="switch" aria-checked="${!!cut.removeBg}"><span class="switch ${cut.removeBg ? 'on' : ''}" style="transform:scale(.7);margin:-6px -7px"></span>Remove background</button>
     </div>
     <div class="slider-row" data-a="tol-row"><span>Less</span><input type="range" min="${TOL_MIN}" max="${TOL_MAX}" value="${Math.min(TOL_MAX, Math.max(TOL_MIN, cut.tolerance))}" aria-label="How much background to remove" /><span>More</span></div>
-    <div class="slider-cap" data-a="smooth-cap">Smooth edges</div>
-    <div class="slider-row" data-a="smooth-row"><span>Off</span><input type="range" min="0" max="5" step="1" value="${Math.min(5, Math.max(0, cut.smooth || 0))}" aria-label="Smooth edges" data-smooth /><span>Max</span></div>
     <div class="cut-more" data-a="more-row">
       <button class="btn soft" data-a="erase" aria-pressed="false">${svg('eraser')}<span>Remove</span></button>
       <button class="btn soft" data-a="add" aria-pressed="false">${svg('brush')}<span>Add back</span></button>
@@ -1404,8 +1488,6 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
   function syncTools() {
     if (!cut.removeBg) mode = null;
     $('[data-a=tol-row]', el).style.display = cut.removeBg ? '' : 'none';
-    $('[data-a=smooth-row]', el).style.display = cut.removeBg ? '' : 'none';
-    $('[data-a=smooth-cap]', el).style.display = cut.removeBg ? '' : 'none';
     $('[data-a=more-row]', el).style.display = cut.removeBg ? '' : 'none';
     $('[data-a=undo]', el).style.display = cut.seeds.length ? '' : 'none';
     [[eraseBtn, 'erase', 'Remove'], [addBtn, 'add', 'Add back']].forEach(([b, m, label]) => {
@@ -1462,7 +1544,7 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     await pause(30); // let the spinner paint before the heavy work
     if (mine !== run) return; // a newer change superseded this one
     mask = computeMask(cut.raster, cut.tolerance, cut.seeds);
-    cut.result = renderSticker(cut.raster, mask, { removeBg: cut.removeBg, smooth: cut.smooth || 0 });
+    cut.result = renderSticker(cut.raster, mask, { removeBg: cut.removeBg });
     cut.guess = null;
     if (cut.removeBg) { try { cut.guess = guessCategory(mask, cut.raster.width, cut.raster.height); } catch { /* no guess */ } }
     stage.classList.remove('loading');
@@ -1494,24 +1576,6 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     if (!cut.seeds.length && document.activeElement === $('[data-a=undo]', el)) eraseBtn.focus({ preventScroll: true }); // Undo is about to hide
     process();
   } });
-  // smoothing only redraws the sticker from the cut already made
-  async function restyle() {
-    if (!mask) { await process(); return; }
-    const mine = ++run;
-    stage.classList.add('loading');
-    await pause(30);
-    if (mine !== run) return;
-    cut.result = renderSticker(cut.raster, mask, { removeBg: cut.removeBg, smooth: cut.smooth || 0 });
-    stage.classList.remove('loading');
-    show();
-    onChange?.(cut);
-  }
-  const smoothIn = $('[data-smooth]', el);
-  smoothIn.addEventListener('input', () => {
-    cut.smooth = +smoothIn.value;
-    haptic('select');
-    clearTimeout(timer); timer = setTimeout(() => { timer = null; restyle(); }, 140);
-  });
   let lastTick = cut.tolerance;
   range.addEventListener('input', () => {
     cut.tolerance = +range.value;
@@ -1614,7 +1678,6 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
     // a name the app generated stays automatic, so it follows later category / type changes
     name: item && item.name !== autoName(item.cat, item.sub, item.brand) ? item.name : '',
     notes: item?.notes || '',
-    smooth: item?.cut?.smooth || 0,
     price: item?.price ?? '',
     brand: item?.brand || '',
   };
@@ -1626,7 +1689,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
   </div>`);
   const s = sheet(c);
   // swipe, scrim tap and Escape all ask first once there is a photo or a change to lose
-  const sig = () => JSON.stringify([st.original === (item?.original || null), st.cat, st.sub, st.name, st.price, st.brand, st.notes, st.tolerance, st.removeBg, st.smooth, st.seeds]);
+  const sig = () => JSON.stringify([st.original === (item?.original || null), st.cat, st.sub, st.name, st.price, st.brand, st.notes, st.tolerance, st.removeBg, st.seeds]);
   const clean = sig();
   s.dismiss = async () => {
     if (sig() !== clean && !(await confirmSheet(item ? 'Discard changes?' : 'Discard this item?', '', 'Discard'))) return;
@@ -1715,7 +1778,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
       <div class="more ${open ? 'open' : ''}" data-more>
         <div class="field"><label>Type</label><div class="wrap-chips" data-subs></div></div>
         <div data-brand></div>
-        <div class="field"><label>Name</label><input class="input" data-name placeholder="Name" value="${esc(st.name)}" maxlength="40" /></div>
+        <div class="field"><label>Name</label><input class="input" data-name placeholder="Name" value="${esc(st.name)}" maxlength="40" autocapitalize="words" /></div>
         <div class="field"><label>Notes</label><textarea class="input notes" data-notes rows="3" maxlength="500" placeholder="Size, fit, care, where it is from">${esc(st.notes)}</textarea></div>
         ${item ? '' : `<div class="field"><label>Price (optional)</label><div class="price-wrap"><span>$</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
       </div>
@@ -1808,7 +1871,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
       stickerDark: st.result.darkURL || (item && st.result.dataURL === itemById(item.id)?.sticker ? itemById(item.id)?.stickerDark : null) || null,
       colors,
       original: st.original,
-      cut: { v: CUT_V, tolerance: st.tolerance, seeds: st.seeds, removeBg: st.removeBg, smooth: st.smooth || 0 },
+      cut: { v: CUT_V, tolerance: st.tolerance, seeds: st.seeds, removeBg: st.removeBg },
     };
     if (!rec.brand) delete rec.brand;
     await db.put('items', rec);
@@ -1946,7 +2009,7 @@ function openBatch(files, presetCat = null) {
     let raster;
     try { raster = rasterize(await loadImage(e.original), 900); } catch { tuning = false; toast('Photo could not be opened'); return; }
     if (e.status !== 'done' || saving) { tuning = false; return; }
-    const cut = { raster, tolerance: e.cut.tolerance, seeds: [...e.cut.seeds], removeBg: e.cut.removeBg, smooth: e.cut.smooth || 0, result: e.result };
+    const cut = { raster, tolerance: e.cut.tolerance, seeds: [...e.cut.seeds], removeBg: e.cut.removeBg, result: e.result };
     const cat0 = e.cat;
     let changed = false, ed = null;
     const t = h(`<div class="tuner"><h2>Fix cut-out</h2>
@@ -1959,12 +2022,12 @@ function openBatch(files, presetCat = null) {
       if (ed.pending()) {
         // the slider moved but its re-cut had not run yet: cut this photo again with the new settings
         ed.cancel();
-        e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg, smooth: cut.smooth };
+        e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg };
         e.status = 'wait'; paint(e); sync(); pump();
         return;
       }
       if (!changed) return;
-      e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg, smooth: cut.smooth };
+      e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg };
       e.result = cut.result;
       if (e.auto && e.cat === cat0 && cut.guess) e.cat = cut.guess;
       paint(e); sync();
@@ -1977,7 +2040,7 @@ function openBatch(files, presetCat = null) {
       const tol = cut.tolerance, rb = cut.removeBg;
       changed = false; // everything, this photo included, is cut again below
       ed.cancel();
-      e.cut = { tolerance: tol, seeds: cut.seeds, removeBg: rb, smooth: cut.smooth };
+      e.cut = { tolerance: tol, seeds: cut.seeds, removeBg: rb };
       ts.close();
       live().forEach((x) => {
         x.cut.tolerance = tol; x.cut.removeBg = rb;
@@ -2011,7 +2074,7 @@ function openBatch(files, presetCat = null) {
         id: uid(), created: now + i,
         name: autoName(e.cat, null), cat: e.cat, sub: null, price: null,
         sticker: e.result.dataURL, stickerDark: e.result.darkURL || null, colors: mainColors(e.result),
-        original: e.original, cut: { v: CUT_V, tolerance: e.cut.tolerance, seeds: e.cut.seeds, removeBg: e.cut.removeBg, smooth: e.cut.smooth || 0 },
+        original: e.original, cut: { v: CUT_V, tolerance: e.cut.tolerance, seeds: e.cut.seeds, removeBg: e.cut.removeBg },
       },
     }));
     let added = 0;
@@ -2076,7 +2139,7 @@ function openBatch(files, presetCat = null) {
           if (cancelled) return;
           if (e.status === 'gone') continue;
           const mask = computeMask(raster, e.cut.tolerance, e.cut.seeds);
-          e.result = renderSticker(raster, mask, { removeBg: e.cut.removeBg, smooth: e.cut.smooth || 0 });
+          e.result = renderSticker(raster, mask, { removeBg: e.cut.removeBg });
           // the category starts as what the shape looks like; a tap on the row changes it
           if (e.auto && e.cut.removeBg) { try { e.cat = guessCategory(mask, raster.width, raster.height) || e.cat; } catch { /* left to the person */ } }
           // "use for all" may have changed the strength while this one was being cut
@@ -2300,7 +2363,7 @@ function renderMix(focusRow = null) {
 /** The Rows sheet: what Mix shows, top to bottom. Drag the handle to reorder, minus to remove, up to five rows. */
 function openMixRows() {
   const kinds = (pressed, label) => `<div class="kinds" role="group" aria-label="${label}"><div>${CAT_ORDER.map((cat) => `<button type="button" data-k="${cat}" aria-pressed="${cat === pressed}" tabindex="-1">${svg(cat)}<span>${CATS[cat].label}</span></button>`).join('')}</div></div>`;
-  const c = h(`<div class="rows-ed"><h2>Rows</h2><p class="sub">What Mix shows, top to bottom. Tap a row to change it, drag ${svg('grip', 'class="inline"')} to move it. Up to ${MIX_MAX}; a kind can have more than one.</p>
+  const c = h(`<div class="rows-ed"><h2>Mix rows</h2>
     <ol class="rows-list"></ol>
     <div class="rows-adder"><button class="btn soft rows-add" data-a="add" aria-expanded="false">${svg('plus')}<span>Add a row</span></button>${kinds(null, 'Kind of row to add')}</div>
     <div class="row-btns"><button class="btn soft" data-a="reset">Reset</button><button class="btn sage" data-a="done">Done</button></div></div>`);
@@ -3420,6 +3483,13 @@ async function load() {
     for (const it of state.items) if (it.name === oldAutoName(it.colors, it.cat, it.sub)) { it.name = autoName(it.cat, it.sub, it.brand); db.put('items', it).catch(() => {}); }
     try { localStorage.setItem('closet.names2', '1'); } catch { /* as above */ }
   }
+  // and names made from a brand typed in small letters get its capital ("adidas T-shirt" becomes "Adidas T-shirt")
+  for (const it of state.items) {
+    const b = (it.brand || '').trim();
+    if (!b || it.name !== `${b} ${it.sub ? typeNoun(it.sub) : (CAT_NOUN[it.cat] || 'Item')}`) continue;
+    const name = autoName(it.cat, it.sub, b);
+    if (name !== it.name) { it.name = name; db.put('items', it).catch(() => {}); }
+  }
   // "In the wash" is no more: old marks go
   for (const it of state.items) if (it.wash) { delete it.wash; db.put('items', it).catch(() => {}); }
   // Outerwear arrived after some jackets and coats were filed under Tops: move those once
@@ -3503,7 +3573,7 @@ function swayOnScroll() {
     if (!raf) put('0deg');
   };
   window.addEventListener('scroll', () => {
-    if (state.view !== 'closet' || reduceMotion()) return;
+    if (state.view !== 'closet' || reduceMotion() || lockY !== null || performance.now() < scrollQuietUntil) { lastY = window.scrollY; return; }
     const now = performance.now(), dy = window.scrollY - lastY, dt = Math.max(8, now - lastT);
     lastY = window.scrollY; lastT = now;
     target = Math.max(-4, Math.min(4, target + (dy / dt) * 1.6));
