@@ -1,4 +1,5 @@
 // Haptic feedback.
+// iOS app (WKWebView, see ios/): a "haptic" message to the native side.
 // Android / Chrome: Vibration API.
 // iOS Safari (18+): toggling a native <input switch> produces a system haptic tick.
 
@@ -33,9 +34,13 @@ const patterns = {
   long: [10, 30, 22],
 };
 
+// Inside the iOS app (see ios/), the native side plays real haptics.
+const native = () => window.webkit?.messageHandlers?.haptic;
+
 export function haptic(kind = 'light') {
   try {
-    if (isIOS) {
+    if (native()) native().postMessage(kind);
+    else if (isIOS) {
       iosTick();
       if (kind === 'success' || kind === 'long' || kind === 'warning') setTimeout(iosTick, 90);
     } else if (navigator.vibrate) {

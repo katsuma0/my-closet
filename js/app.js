@@ -1,22 +1,27 @@
 import { db, uid } from './db.js';
 import { haptic } from './haptics.js';
-import { loadImage, rasterize, computeMask, renderSticker, renderMaskPreview, DEFAULT_TOLERANCE } from './cutout.js';
-import { colorName, closeness, hexToHsl } from './color.js';
+import { loadImage, rasterize, computeMask, renderSticker, renderMaskPreview, guessCategory, DEFAULT_TOLERANCE, EDGE_DARK } from './cutout.js';
+import { retintSticker } from './edge.js';
+import { colorName, closeness, hexToHsl, hexToRgb, hexToLab } from './color.js';
 
 /* ------------------------------------------------------------------ data */
 
 const CATS = {
-  top: { label: 'Tops', subs: ['T-shirts', 'Shirts', 'Blouses', 'Knits', 'Hoodies', 'Tanks', 'Jackets', 'Coats', 'Dresses'] },
+  top: { label: 'Tops', subs: ['T-shirts', 'Shirts', 'Blouses', 'Knits', 'Hoodies', 'Tanks', 'Dresses'] },
+  outer: { label: 'Outerwear', subs: ['Jackets', 'Coats', 'Blazers', 'Puffers', 'Vests', 'Raincoats'] },
   bottom: { label: 'Bottoms', subs: ['Jeans', 'Trousers', 'Shorts', 'Skirts', 'Leggings', 'Sweatpants'] },
   shoes: { label: 'Shoes', subs: ['Sneakers', 'Boots', 'Loafers', 'Heels', 'Flats', 'Sandals'] },
   acc: { label: 'Accessories', subs: ['Bags', 'Hats', 'Jewelry', 'Belts', 'Scarves', 'Sunglasses', 'Watches'] },
 };
-const CAT_ORDER = ['top', 'bottom', 'shoes', 'acc'];
+const CAT_ORDER = ['top', 'outer', 'bottom', 'shoes', 'acc'];
+// pieces typed as these were tops before Outerwear existed
+const OUTER_SUBS = new Set(['Jackets', 'Coats']);
 const BOARD = [['Linen', '#fdfcfa'], ['Sand', '#efe9df'], ['Sage', '#e9ede3'], ['Blush', '#f3e9e4'], ['Fog', '#e6ebee'], ['Night', '#2f2b27']];
 const BOARD_COLORS = BOARD.map((b) => b[1]);
 
 const ICON = {
   top: '<path d="M8 4 3.5 6.5l1.8 3.6L7.5 9v11h9V9l2.2 1.1 1.8-3.6L16 4c-.6 1.4-2.2 2.3-4 2.3S8.6 5.4 8 4z"/>',
+  outer: '<path d="M9 3.5 4.5 5.6 3 13l2.3.5V21h13.4v-7.5L21 13l-1.5-7.4L15 3.5l-3 5.5zM12 9v12"/>',
   bottom: '<path d="M7 3h10l1.2 18h-4.4L12 10l-1.8 11H5.8zM7 6.5h10"/>',
   shoes: '<path d="M3 17v-6.5l4-.6 2.6 3 3.6.6 5.6 1.5c1.3.3 2.2 1.4 2.2 2.6V18H3zM3 15.5h18"/>',
   acc: '<path d="M5 8h14l-1.2 12H6.2zM9 8V6.5a3 3 0 0 1 6 0V8"/>',
@@ -38,6 +43,11 @@ const ICON = {
   heart: '<path d="M12 20s-7-4.4-7-9.6A4.1 4.1 0 0 1 12 8a4.1 4.1 0 0 1 7 2.4c0 5.2-7 9.6-7 9.6z"/>',
   search: '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/>',
   share: '<path d="M12 15V4M8 8l4-4 4 4M6 12v7h12v-7"/>',
+  swap: '<path d="M7 7h11l-3-3M17 17H6l3 3"/>',
+  filter: '<path d="M4 7h16M7 12h10M10 17h4"/>',
+  chev: '<path d="m6 9 6 6 6-6"/>',
+  drop: '<path d="M12 3.5c3 3.6 5.5 6.6 5.5 10a5.5 5.5 0 0 1-11 0c0-3.4 2.5-6.4 5.5-10z"/>',
+  layers: '<path d="m12 4 8 4.5-8 4.5-8-4.5zM4 13l8 4.5 8-4.5"/>',
   tune: '<path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.6"/><circle cx="8" cy="17" r="2.6"/>',
   rotate: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
@@ -54,22 +64,22 @@ const state = {
   view: 'closet',
   filterCat: 'all',
   filterSub: null,
-  filterFav: false,
   search: '',
-  searchOpen: false,
 };
 
-/* Appearance and accessibility choices. Kept in localStorage so index.html can apply them before first paint. */
+/* Appearance choices. Kept in localStorage so index.html can apply them before first paint. */
 const PREFS_KEY = 'closet.prefs';
-const prefs = { theme: 'system', text: 1, contrast: false, motion: false };
-try { Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) || '{}')); } catch { /* private mode: defaults */ }
+const prefs = { theme: 'system', contrast: false };
+try {
+  const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+  if (['system', 'light', 'dark'].includes(saved.theme)) prefs.theme = saved.theme;
+  prefs.contrast = !!saved.contrast;
+} catch { /* private mode: defaults */ }
 const isDark = () => prefs.theme === 'dark' || (prefs.theme === 'system' && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
 function applyPrefs(save = true) {
   const r = document.documentElement;
   if (prefs.theme === 'system') r.removeAttribute('data-theme'); else r.dataset.theme = prefs.theme;
-  r.style.setProperty('--ts', String(prefs.text));
   r.toggleAttribute('data-contrast', false); if (prefs.contrast) r.dataset.contrast = 'more';
-  r.toggleAttribute('data-motion', false); if (prefs.motion) r.dataset.motion = 'reduce';
   document.querySelector('meta[name=theme-color]')?.setAttribute('content', isDark() ? '#1b1917' : '#f6f3ee');
   if (save) { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* not stored, still applied */ } }
 }
@@ -85,6 +95,8 @@ const money = (n) => {
 };
 const itemById = (id) => state.items.find((i) => i.id === id);
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+// running inside the iOS app (ios/), which has its own haptics and share sheet
+const inApp = () => !!window.webkit?.messageHandlers?.haptic;
 // favourites and the wear log
 const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
 const wears = (x) => (x?.worn || []).length;
@@ -127,27 +139,187 @@ function pairScore(a, b) {
   if (d > 150) return 0.7;                                   // opposites
   return 0.4;
 }
-/** One piece per category whose colours go together, built around `seedId` if given. Favourites and less-worn pieces get a small push. */
-function suggestLook(seedId = null) {
-  const chosen = [];
-  const seed = seedId && itemById(seedId);
-  if (seed) chosen.push(seed);
-  for (const cat of CAT_ORDER) {
-    if (chosen.some((x) => x.cat === cat)) continue;
-    let best = null, bestScore = -1;
-    for (const it of state.items) {
-      if (it.cat !== cat) continue;
-      const fit = chosen.length ? chosen.reduce((sum, x) => sum + pairScore(it.colors?.[0], x.colors?.[0]), 0) / chosen.length : 0.6;
-      const score = fit + (it.fav ? 0.08 : 0) - Math.min(0.1, wears(it) * 0.01) + Math.random() * 0.35;
-      if (score > bestScore) { bestScore = score; best = it; }
+const DAY = 86400000;
+/** In the wash: left out of suggestions until it is back. The mark lifts by itself after a week, so a forgotten one cannot hide a piece for good. */
+const inWash = (it) => !!it?.wash && Date.now() - it.wash < 7 * DAY;
+const lookKey = (ids) => [...new Set(ids)].sort().join(' ');
+const recentPicks = []; // the last few suggestions, so the next one differs
+
+/**
+ * One piece per category whose colours go together, built around the given piece(s) if any.
+ * Colour comes first; among pieces that fit about equally, the ones that have rested longest, are in no
+ * look yet or are favourites come forward, and a top or bottom worn in the last two days steps back.
+ * A set that is already a saved look, or was just suggested, is rolled again.
+ */
+function suggestLook(seeds = []) {
+  const seedIds = (Array.isArray(seeds) ? seeds : [seeds]).filter(Boolean);
+  const now = Date.now();
+  const inLooks = new Set();
+  state.outfits.forEach((o) => o.pieces.forEach((p) => inLooks.add(p.itemId)));
+  const saved = new Set(state.outfits.map((o) => lookKey(o.pieces.map((p) => p.itemId))));
+  const lastWorn = (it) => (wears(it) ? it.worn[it.worn.length - 1] : 0);
+  const roll = () => {
+    const chosen = seedIds.map(itemById).filter(Boolean);
+    for (const cat of CAT_ORDER) {
+      if (chosen.some((x) => x.cat === cat)) continue;
+      if (cat === 'outer' && Math.random() > 0.45) continue; // a jacket is a choice, not a must
+      let pool = state.items.filter((it) => it.cat === cat);
+      const clean = pool.filter((it) => !inWash(it));
+      if (clean.length) pool = clean;
+      if (!pool.length) continue;
+      const fits = pool.map((it) => (chosen.length ? chosen.reduce((sum, x) => sum + pairScore(it.colors?.[0], x.colors?.[0]), 0) / chosen.length : 0.6));
+      const bestFit = Math.max(...fits);
+      let best = null, bestScore = -Infinity;
+      pool.forEach((it, i) => {
+        if (fits[i] < bestFit - 0.2) return;
+        const rested = Math.min(60, Math.max(0, (now - (lastWorn(it) || it.created || 0)) / DAY)) / 60 * 0.2;
+        const justWorn = (cat === 'top' || cat === 'bottom') && lastWorn(it) && now - lastWorn(it) < 2 * DAY ? 0.3 : 0;
+        const score = fits[i] + rested + (inLooks.has(it.id) ? 0 : 0.08) + (it.fav ? 0.05 : 0) - justWorn + Math.random() * 0.25;
+        if (score > bestScore) { bestScore = score; best = it; }
+      });
+      if (best) chosen.push(best);
     }
-    if (best) chosen.push(best);
+    return chosen.map((x) => x.id);
+  };
+  let ids = roll();
+  for (let i = 0; i < 6 && ids.length > 1 && (saved.has(lookKey(ids)) || recentPicks.includes(lookKey(ids))); i++) ids = roll();
+  if (ids.length) { recentPicks.push(lookKey(ids)); if (recentPicks.length > 6) recentPicks.shift(); }
+  return ids;
+}
+
+/**
+ * Where pieces go when the app lays a look out: tops high, bottoms under them, shoes at the foot and
+ * accessories out at the edges, each with a small random tilt and nudge so it reads as laid out by hand.
+ * `list` is [{ cat, ar }] (ar = the picture's height / width when known); `ratio` is the board's height / width.
+ * Returns { at: [{ x, y, w, rot }] in the same order, order: indexes from the back of the pile to the front }.
+ */
+function layoutLook(list, ratio = 1.5) {
+  const by = { top: [], outer: [], bottom: [], shoes: [], acc: [] };
+  list.forEach((e, i) => (by[e.cat] || by.acc).push(i));
+  const AR = { top: 1.05, outer: 1.2, bottom: 1.5, shoes: 0.75, acc: 1 };
+  const kind = (i) => (by.outer.includes(i) ? 'outer' : null);
+  // outerwear is laid next to (and over) the tops, so the two share the top band
+  by.top = [...by.top, ...by.outer];
+  const jit = (a) => (Math.random() * 2 - 1) * a;
+  const at = new Array(list.length);
+  const main = ['top', 'bottom', 'shoes'].filter((k) => by[k].length);
+  const hasAcc = by.acc.length > 0;
+  if (!main.length) {
+    // accessories only: a loose grid
+    const n = by.acc.length, cols = Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols);
+    by.acc.forEach((i, j) => {
+      const cx = ((j % cols) + 0.5) / cols, cy = (Math.floor(j / cols) + 0.5) / rows;
+      const w = Math.min(0.44, 0.78 / cols, (0.7 / rows) * ratio / (list[i].ar || AR.acc));
+      at[i] = { x: 0.1 + cx * 0.8 + jit(0.02), y: 0.1 + cy * 0.8 + jit(0.02), w, rot: jit(9) };
+    });
+    return { at, order: [...by.acc] };
   }
-  return chosen.map((x) => x.id);
+  // bands down the board for the clothes that are there; they keep to a centre column when accessories need the edges
+  const share = { top: 0.4, bottom: 0.4, shoes: 0.2 }, base = { top: 0.5, bottom: 0.4, shoes: 0.3 };
+  const total = main.reduce((t, k) => t + share[k], 0);
+  const left = hasAcc ? 0.2 : 0.1, right = hasAcc ? 0.8 : 0.9;
+  let y = 0.05;
+  for (const k of main) {
+    const band = 0.9 * share[k] / total, cy = y + band / 2;
+    y += band;
+    const ids = by[k], n = ids.length, room = (right - left) / n;
+    ids.forEach((i, j) => {
+      const ar = list[i].ar || AR[kind(i) || k];
+      const wide = kind(i) === 'outer' ? base.top * 1.06 : base[k];
+      // as wide as its kind usually is, but never so tall that it leaves its band by much, nor wider than its share of the row
+      const w = Math.max(0.15, Math.min(wide * (hasAcc ? 0.92 : 1), n > 1 ? room * 1.22 : 1, band * (k === 'bottom' ? 1.3 : 1.12) * ratio / ar));
+      const x = n === 1 ? (left + right) / 2 : left + room * (j + 0.5);
+      at[i] = { x: x + jit(0.02), y: cy + (n > 1 ? (j % 2 ? 0.018 : -0.018) : 0) + jit(0.012), w, rot: jit(k === 'shoes' ? 8 : 5) };
+    });
+  }
+  // accessories: alternate sides, top to bottom, clear of the foot of the board when shoes are there
+  const floor = by.shoes.length ? 0.7 : 0.86;
+  const slots = [[1, 0.42], [0, 0.5], [1, 0.14], [0, 0.16], [1, floor], [0, floor + 0.04], [1, 0.28], [0, 0.33]];
+  by.acc.forEach((i, j) => {
+    const [side, sy] = slots[j % slots.length], lap = Math.floor(j / slots.length);
+    const w = Math.min(by.acc.length <= 2 ? 0.25 : 0.21, 0.2 * ratio / (list[i].ar || AR.acc));
+    at[i] = { x: (side ? 0.87 : 0.13) + (side ? -1 : 1) * lap * 0.08 + jit(0.015), y: Math.min(0.92, sy + lap * 0.06) + jit(0.02), w, rot: jit(11) };
+  });
+  return { at, order: [...by.bottom, ...by.top, ...by.shoes, ...by.acc] }; // by.top already ends with the outerwear
+}
+/** The same, for pieces by id (their pictures give the real proportions). Returns pieces ready for a look, back to front. */
+async function layoutPieces(ids, ratio, dark = false) {
+  const list = await Promise.all(ids.map(async (id) => {
+    const it = itemById(id);
+    let ar = null;
+    try { const im = await getImg(it, dark); ar = im.naturalHeight / im.naturalWidth || null; } catch { /* a usual shape is assumed */ }
+    return { cat: it?.cat, ar };
+  }));
+  const lay = layoutLook(list, ratio);
+  return lay.order.map((i) => ({ itemId: ids[i], ...lay.at[i], flip: false }));
 }
 
 // the colours shown for a piece: its main two
 const mainColors = (x) => (x?.colors || []).slice(0, 2);
+/** A piece's picture. On dark backgrounds the version with the soft edge is used once it exists, so the white sticker edge does not glare. */
+const stickerOf = (it, dark = isDark()) => (dark && it?.stickerDark) || it?.sticker || '';
+const cutPreview = (res) => (isDark() && res.darkURL) || res.dataURL;
+const darkBoard = (hex) => hexToHsl(hex || '#ffffff')[2] < 40;
+const hslHex = (hh, ss, ll) => {
+  const s1 = ss / 100, l1 = ll / 100, k = (n) => (n + hh / 30) % 12, a = s1 * Math.min(l1, 1 - l1);
+  const f = (n) => Math.round(255 * (l1 - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))));
+  return '#' + [f(0), f(8), f(4)].map((v) => v.toString(16).padStart(2, '0')).join('');
+};
+const deltaE = (a, b) => { const x = hexToLab(a), y = hexToLab(b); return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]); };
+// how much of a look each kind of piece usually fills
+const AREA = { outer: 1.3, bottom: 1.2, top: 1, shoes: 0.5, acc: 0.4 };
+/**
+ * An automatic board colour for a look: a soft tint of the colour its pieces share most (by how much of the
+ * look each fills), pale on light screens and deep on dark ones. A look of neutrals gets a warm neutral.
+ */
+function autoBoard(o, dark = isDark()) {
+  const hues = [];
+  let total = 0;
+  for (const p of o.pieces) {
+    const it = itemById(p.itemId), col = it?.colors?.[0];
+    if (!col) continue;
+    const [hh, ss, ll] = hexToHsl(col), w = AREA[it.cat] || 1;
+    total += w;
+    if (ss < 14 || ll < 12 || ll > 92) continue; // neutrals set no hue
+    hues.push([hh, w * Math.min(1, ss / 60)]);
+  }
+  const near = (a, b) => Math.abs(((a - b + 540) % 360) - 180) < 35; // hue distance under 35 degrees
+  // the family of hues with the most weight wins (an average of red and blue would be a purple that is in neither)
+  let best = null, bestW = 0;
+  for (const [hh] of hues) {
+    const w = hues.reduce((sum, [h2, k]) => sum + (near(hh, h2) ? k : 0), 0);
+    if (w > bestW) { bestW = w; best = hh; }
+  }
+  if (!total || best === null || bestW < total * 0.18) return dark ? '#2b2724' : '#f2ede6';
+  let x = 0, y = 0;
+  for (const [hh, k] of hues) if (near(best, hh)) { x += Math.cos(hh * Math.PI / 180) * k; y += Math.sin(hh * Math.PI / 180) * k; }
+  const hue = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  return dark ? hslHex(hue, 20, 17) : hslHex(hue, 32, 91);
+}
+/**
+ * The outline for a piece on a board: a soft version of the piece's main colour, or of its second colour when
+ * the main one would melt into the board.
+ */
+function edgeFor(it, board) {
+  const dark = darkBoard(board);
+  const tint = (col) => { const [hh, ss] = hexToHsl(col); return dark ? hslHex(hh, Math.min(ss, 38), 34) : hslHex(hh, Math.min(ss, 48), 79); };
+  const cands = (it.colors || []).slice(0, 2).filter(Boolean).map(tint);
+  if (!cands.length) return dark ? '#4e4841' : '#ffffff';
+  const best = cands.find((c) => deltaE(c, board) > 9) || cands.reduce((a, b) => (deltaE(b, board) > deltaE(a, board) ? b : a));
+  return best;
+}
+/** A piece's picture with its outline in `hex` (made once, then kept for the visit). Falls back to the usual picture. */
+const tinted = new Map();
+function tintedSticker(it, hex) {
+  const key = `${it.id}|${it.sticker.length}|${hex}`;
+  if (!tinted.has(key)) {
+    tinted.set(key, retintSticker(it.sticker, hexToRgb(hex)).then((url) => url || null).catch(() => null));
+    if (tinted.size > 400) tinted.delete(tinted.keys().next().value);
+  }
+  return tinted.get(key);
+}
+/** Which outline a piece wears on a look: tinted to the piece when the look's background is automatic, else white or soft dark. */
+const edgeOf = (o, it) => (o.auto ? edgeFor(it, o.board) : darkBoard(o.board));
 // keep digits and a single decimal separator (comma typed on some keyboards becomes a dot)
 const cleanPrice = (v) => {
   const t = String(v).replace(/,/g, '.').replace(/[^0-9.]/g, '');
@@ -215,6 +387,10 @@ function sheet(content, { full = false, onClose } = {}) {
   const heading = el.querySelector('h2');
   if (heading) { heading.id = heading.id || `sheet-title-${++sheetSeq}`; el.setAttribute('aria-labelledby', heading.id); }
   const opener = document.activeElement;
+  // cards are redrawn while a sheet is open (a favourite, a rename): find the same card again by its id
+  const keyed = opener?.closest?.('#views [data-id]');
+  const openerKey = keyed ? `[data-id="${CSS.escape(keyed.dataset.id)}"]` : null;
+  const openerPart = keyed && opener !== keyed ? [...opener.classList].map((c) => '.' + CSS.escape(c)).join('') : '';
   layer.append(scrim, el);
   requestAnimationFrame(() => requestAnimationFrame(() => { scrim.classList.add('show'); el.classList.add('show'); }));
   // only take focus if nothing inside asked for it already
@@ -229,10 +405,13 @@ function sheet(content, { full = false, onClose } = {}) {
       el.style.transform = '';
       setTimeout(() => { scrim.remove(); el.remove(); }, 520);
       const inside = el.contains(document.activeElement);
+      el.inert = true;
+      syncTabbar(); // what is underneath is reachable again before anything is focused there
       onClose?.();
       // hand focus back to whatever opened the sheet, unless closing it already moved focus somewhere
-      if ((inside || document.activeElement === document.body) && opener && opener !== document.body && document.contains(opener)) opener.focus?.({ preventScroll: true });
-      syncTabbar();
+      const again = openerKey && $(`#views ${openerKey}`);
+      const back = opener && opener !== document.body && document.contains(opener) ? opener : again && ((openerPart && $(openerPart, again)) || again.querySelector('button') || again);
+      if ((inside || document.activeElement === document.body) && back) back.focus?.({ preventScroll: true });
     },
   };
   if (!full) {
@@ -318,53 +497,82 @@ function sheet(content, { full = false, onClose } = {}) {
 
 function syncTabbar() {
   $('#tabbar').classList.toggle('hidden', stack.some((s) => s.el.classList.contains('full')));
+  // only the sheet on top (or an open menu) can be reached, by touch, keyboard or screen reader
+  $('#app').inert = stack.length > 0 || menuOpen;
+  stack.forEach((s, i) => { s.el.inert = menuOpen || i < stack.length - 1; });
 }
 
+let menuOpen = false;
 function contextMenu(anchor, title, actions, point) {
+  if (menuOpen) return; // one menu at a time
+  menuOpen = true;
   haptic('medium');
+  const before = document.activeElement;
   const scrim = h('<div class="scrim"></div>');
-  const menu = h(`<div class="ctx">${title ? `<div class="ctx-title">${esc(title)}</div>` : ''}</div>`);
+  const menu = h(`<div class="ctx" role="menu">${title ? `<div class="ctx-title">${esc(title)}</div>` : ''}</div>`);
+  if (title) menu.setAttribute('aria-label', title);
   let preview = null;
   const r = anchor?.getBoundingClientRect?.();
   if (anchor && r && r.width < window.innerWidth * 0.8 && r.height < window.innerHeight * 0.6) {
+    // a picture of what was pressed, lifted above the dimmed page: not a second control
     preview = anchor.cloneNode(true);
     preview.classList.add('ctx-preview');
     preview.classList.remove('pressing', 'long-fired', 'sel');
+    [preview, ...$$('[id]', preview)].forEach((n) => n.removeAttribute('id'));
+    preview.inert = true;
+    preview.setAttribute('aria-hidden', 'true');
     Object.assign(preview.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', margin: 0, animation: 'none', transform: anchor.style.transform || '' });
   }
+  let done = false, closed = false;
   for (const a of actions) {
-    const b = h(`<button class="${a.danger ? 'danger' : ''}">${svg(a.icon)}<span>${esc(a.label)}</span></button>`);
-    b.addEventListener('click', () => { haptic(a.danger ? 'warning' : 'select'); close(); setTimeout(() => a.run(), 120); });
+    const b = h(`<button role="menuitem" class="${a.danger ? 'danger' : ''}">${svg(a.icon)}<span>${esc(a.label)}</span></button>`);
+    // a second tap while the menu fades must not run the action again
+    b.addEventListener('click', () => { if (done) return; done = true; haptic(a.danger ? 'warning' : 'select'); close(); setTimeout(() => a.run(), 120); });
     menu.append(b);
   }
   layer.append(scrim);
   if (preview) layer.append(preview);
   layer.append(menu);
-  // position
-  const mw = 230, mh = actions.length * 46 + (title ? 34 : 12);
+  syncTabbar();
+  // position, from the menu's real size
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
   let x, y;
   if (r && preview) {
     x = Math.min(Math.max(12, r.left + r.width / 2 - mw / 2), window.innerWidth - mw - 12);
     y = r.bottom + 10;
-    if (y + mh > window.innerHeight - 20) y = Math.max(12, r.top - mh - 10);
-    if (y < 12) y = 12;
+    if (y + mh > window.innerHeight - 12) y = r.top - mh - 10;
+    y = Math.max(12, Math.min(y, window.innerHeight - mh - 12));
   } else {
     const px = point?.clientX ?? window.innerWidth / 2, py = point?.clientY ?? window.innerHeight / 2;
     x = Math.min(Math.max(12, px - mw / 2), window.innerWidth - mw - 12);
-    y = Math.min(Math.max(12, py - mh - 16), window.innerHeight - mh - 12);
+    y = Math.max(12, Math.min(py - mh - 16, window.innerHeight - mh - 12));
   }
-  Object.assign(menu.style, { left: x + 'px', top: y + 'px', transformOrigin: `${r ? '50%' : '50%'} ${r && y < r.top ? '100%' : '0%'}` });
+  Object.assign(menu.style, { left: x + 'px', top: y + 'px', transformOrigin: `50% ${r && y < r.top ? '100%' : '0%'}` });
   requestAnimationFrame(() => requestAnimationFrame(() => {
     scrim.classList.add('show'); menu.classList.add('show');
     if (preview) preview.style.transform = (anchor.style.transform || '') + ' scale(1.04)';
   }));
-  // Escape closes the menu before anything underneath it
-  function onKey(e) { if (e.key === 'Escape') { e.stopImmediatePropagation(); close(); } }
+  $('button', menu)?.focus({ preventScroll: true });
+  // Escape closes the menu before anything underneath it; arrows move through it
+  function onKey(e) {
+    if (e.key === 'Escape') { e.stopImmediatePropagation(); close(); return; }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const items = $$('button', menu), i = items.indexOf(document.activeElement);
+    items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1) + (i < 0 && e.key === 'ArrowUp' ? 1 : 0)) % items.length]?.focus();
+  }
   function close() {
+    if (closed) return;
+    closed = true; menuOpen = false;
     document.removeEventListener('keydown', onKey, true);
+    scrim.style.pointerEvents = 'none'; menu.style.pointerEvents = 'none';
     scrim.classList.remove('show'); menu.classList.remove('show');
     if (preview) preview.style.transform = anchor.style.transform || '';
     setTimeout(() => { scrim.remove(); menu.remove(); preview?.remove(); }, 380);
+    syncTabbar();
+    // focus goes back to what was pressed, so whatever the action opens can hand it back there later
+    const back = anchor && document.contains(anchor) ? anchor : before;
+    if (menu.contains(document.activeElement) || document.activeElement === document.body) back?.focus?.({ preventScroll: true });
   }
   scrim.addEventListener('click', close);
   scrim.addEventListener('contextmenu', (e) => { e.preventDefault(); close(); });
@@ -372,12 +580,19 @@ function contextMenu(anchor, title, actions, point) {
 }
 
 let toastTimer;
-function toast(msg) {
+/** A short note at the top. With `action` ({ label, run }) it carries one button, such as Undo, and stays a little longer. */
+function toast(msg, action = null) {
   const t = $('#toast');
   t.textContent = msg;
+  t.classList.toggle('act', !!action);
+  if (action) {
+    const b = h(`<button>${esc(action.label)}</button>`);
+    b.addEventListener('click', () => { t.classList.remove('show'); clearTimeout(toastTimer); action.run(); }, { once: true });
+    t.append(b);
+  }
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2000);
+  toastTimer = setTimeout(() => t.classList.remove('show'), action ? 4000 : 2000);
 }
 
 function confirmSheet(title, text, okLabel = 'Delete') {
@@ -396,6 +611,8 @@ function confirmSheet(title, text, okLabel = 'Delete') {
 function setView(v) {
   if (state.view === v) return;
   state.view = v;
+  // a search belongs to the page it was typed on
+  state.search = '';
   markTab(v);
   $$('.view').forEach((s) => s.classList.toggle('active', s.id === 'view-' + v));
   const title = $('#view-title');
@@ -405,9 +622,9 @@ function setView(v) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-// Which tab the glass drop sits under ('tally' while the tally sheet is up).
+// Which tab the glass drop sits under.
 function markTab(key) {
-  $$('#tabs .tab').forEach((t) => t.classList.toggle('active', (t.dataset.view || 'tally') === key));
+  $$('#tabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.view === key));
   moveTabInd();
 }
 function moveTabInd() {
@@ -419,14 +636,16 @@ function moveTabInd() {
 
 function render() {
   if (state.view === 'closet') renderCloset();
+  if (state.view === 'mix') renderMix();
   if (state.view === 'outfits') renderOutfits();
+  if (state.view === 'stats') renderStats();
 }
 
 /* ------------------------------------------------------------------ closet view */
 
 // Names a piece from its main colour and what it is: "Sage knit", "Denim jeans", "Beige accessory".
-const SINGULAR = { 'T-shirts': 't-shirt', Shirts: 'shirt', Blouses: 'blouse', Knits: 'knit', Hoodies: 'hoodie', Tanks: 'tank', Jackets: 'jacket', Coats: 'coat', Dresses: 'dress', Skirts: 'skirt', Bags: 'bag', Hats: 'hat', Belts: 'belt', Scarves: 'scarf', Watches: 'watch' };
-const CAT_NOUN = { top: 'top', bottom: 'bottoms', shoes: 'shoes', acc: 'accessory' };
+const SINGULAR = { Blazers: 'blazer', Puffers: 'puffer', Vests: 'vest', Raincoats: 'raincoat', 'T-shirts': 't-shirt', Shirts: 'shirt', Blouses: 'blouse', Knits: 'knit', Hoodies: 'hoodie', Tanks: 'tank', Jackets: 'jacket', Coats: 'coat', Dresses: 'dress', Skirts: 'skirt', Bags: 'bag', Hats: 'hat', Belts: 'belt', Scarves: 'scarf', Watches: 'watch' };
+const CAT_NOUN = { top: 'top', outer: 'jacket', bottom: 'bottoms', shoes: 'shoes', acc: 'accessory' };
 function autoName(colors, cat, sub) {
   const noun = sub ? (SINGULAR[sub] || sub.toLowerCase()) : (CAT_NOUN[cat] || 'piece');
   const n = `${colors?.[0] ? colorName(colors[0]) + ' ' : ''}${noun}`;
@@ -463,31 +682,25 @@ function renderCloset() {
   root.innerHTML = '';
 
   if (!state.items.length) {
-    const e = h(`<div class="empty"><h3>Your closet is empty</h3><button class="btn">${svg('plus')} Add a piece</button></div>`);
-    press($('.btn', e), { tap: () => openAdd() });
+    resetClosetFilters();
+    const e = h(`<div class="empty start"><h3>Start your closet</h3>
+      <p>Lay each piece flat on a plain, light surface and take its photo. Choose many photos at once to add them together.</p>
+      <div class="pick-btns">
+        <button class="btn" data-a="cam">${svg('camera')}<span>Take photo</span></button>
+        <button class="btn soft" data-a="lib">${svg('image')}<span>Choose photos</span></button>
+      </div></div>`);
+    press($('[data-a=cam]', e), { tap: () => quickPick('camera') });
+    press($('[data-a=lib]', e), { tap: () => quickPick('library') });
     root.append(e);
     return;
   }
 
-  // search (opened from the header)
-  if (state.searchOpen) {
-    const sr = h(`<div class="search">${svg('search')}<input type="search" placeholder="Search" aria-label="Search your closet" autocomplete="off" enterkeyhint="search" /><button aria-label="Close search">${svg('close')}</button></div>`);
-    const inp = $('input', sr);
-    inp.value = state.search;
-    inp.addEventListener('input', () => { state.search = inp.value; drawGrid(); });
-    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
-    press($('button', sr), { tap: () => toggleSearch(false) });
-    root.append(sr);
-  }
+  // search, favourites, sort and filter
+  const families = () => FAMILIES.map(([f]) => f).filter((f) => state.items.some((i) => family(mainColors(i)[0]) === f));
+  root.append(toolbar('closet', 'Search your closet', () => drawGrid(), families));
 
-  // categories (with a favourites filter once something is a favourite)
+  // categories
   const chips = h('<div class="chips nav"></div>');
-  if (!state.items.some((i) => i.fav)) state.filterFav = false;
-  else {
-    const f = h(`<button class="chip fav ${state.filterFav ? 'active' : ''}" aria-label="Favourites" aria-pressed="${state.filterFav}">${svg('heart')}</button>`);
-    press(f, { tap: () => { state.filterFav = !state.filterFav; renderCloset(); }, hapticTap: 'select' });
-    chips.append(f);
-  }
   const mk = (key, label) => {
     const c = h(`<button class="chip ${state.filterCat === key ? 'active' : ''}">${label}</button>`);
     press(c, {
@@ -520,24 +733,26 @@ function renderCloset() {
   // redrawn on its own while typing in the search box, so the box keeps focus
   function drawGrid() {
     host.innerHTML = '';
-    const q = state.search.trim().toLowerCase();
-    const items = state.items
+    const q = state.search.trim();
+    const items = sortFilter(state.items
       .filter((i) => state.filterCat === 'all' || i.cat === state.filterCat)
       .filter((i) => !state.filterSub || i.sub === state.filterSub)
-      .filter((i) => !state.filterFav || i.fav)
-      .filter((i) => !q || [i.name, i.sub, CATS[i.cat]?.label, ...mainColors(i).map(colorName)].some((t) => t && t.toLowerCase().includes(q)))
-      .sort((a, b) => b.created - a.created);
+      .filter((i) => matches(itemWords(i), q)), 'closet', mainColors, (i) => i.created);
     if (!items.length) {
-      host.append(h(`<div class="empty"><p>${q ? 'Nothing matches' : 'No pieces here yet'}</p></div>`));
+      const why = view.closet.fav && !state.items.some((i) => i.fav) ? 'No favourites yet' : q || filtered('closet') ? 'Nothing matches' : 'No pieces here yet';
+      host.append(h(`<div class="empty"><p>${why}</p></div>`));
       return;
     }
     const grid = h('<div class="grid"></div>');
     items.forEach((it, idx) => {
-      const card = h(`<button class="piece" style="animation-delay:${Math.min(idx, 12) * 35}ms">
-        <span class="tile"><img class="sticker" src="${it.sticker}" alt="" loading="lazy" />${it.fav ? `<span class="fav-mark">${svg('heart')}</span>` : ''}</span>
-        <span class="meta"><span class="name">${esc(it.name)}</span><span class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>`);
-      if (it.fav) card.setAttribute('aria-label', `${it.name}, favourite`);
-      press(card, { tap: () => openDetail(it), long: (e) => itemMenu(it, card, e) });
+      const card = h(`<div class="piece ${inWash(it) ? 'wash' : ''}" data-id="${it.id}" style="animation-delay:${Math.min(idx, 12) * 35}ms">
+        <button class="piece-open"><span class="tile"><img class="sticker" src="${stickerOf(it)}" data-st="${it.id}" alt="" loading="lazy" /></span>
+        <span class="meta"><span class="name">${esc(it.name)}</span><span class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>
+        ${heartBtn(it)}</div>`);
+      const open = $('.piece-open', card);
+      if (inWash(it)) open.setAttribute('aria-label', `${it.name}, in the wash`);
+      press(open, { tap: () => openDetail(it), long: (e) => itemMenu(it, card, e) });
+      bindHeart($('.heart', card), it, 'items', () => { if (view.closet.fav) drawGrid(); });
       grid.append(card);
     });
     host.append(grid);
@@ -545,12 +760,139 @@ function renderCloset() {
   drawGrid();
 }
 
-function toggleSearch(open = !state.searchOpen) {
-  state.searchOpen = open;
-  if (!open) state.search = '';
-  if (state.view !== 'closet') setView('closet'); else renderCloset();
-  if (open) setTimeout(() => $('#view-closet .search input')?.focus(), 60);
+/** A heart on a card: tap to favourite or not, without opening anything. */
+const heartBtn = (x) => `<button class="heart" aria-label="Favourite" aria-pressed="${!!x.fav}">${svg('heart')}</button>`;
+function bindHeart(btn, x, store, after) {
+  press(btn, { tap: async () => {
+    await toggleFav(x, store);
+    btn.setAttribute('aria-pressed', String(!!x.fav));
+    after?.();
+  }, hapticTap: null });
 }
+
+/** An empty closet has no chips to show a filter, so none is kept. */
+function resetClosetFilters() {
+  state.filterCat = 'all'; state.filterSub = null;
+  if (state.view === 'closet') state.search = '';
+  resetView('closet');
+}
+
+/* ---------- colour families, for filtering and the rainbow order ---------- */
+const FAMILIES = [['Red', '#c0392b'], ['Orange', '#e07b39'], ['Yellow', '#e9c46a'], ['Green', '#5f8f55'], ['Blue', '#3b6ea8'], ['Purple', '#7d5ba6'], ['Pink', '#e094b4'],
+  ['Brown', '#7a5236'], ['Beige', '#d9c7a7'], ['White', '#f4f2ee'], ['Grey', '#9a9a9a'], ['Black', '#1c1c1c']];
+const FAMILY_AT = Object.fromEntries(FAMILIES.map(([n], i) => [n, i]));
+/** The colour family of a hex colour: one of FAMILIES' names. */
+function family(hex) {
+  if (!hex) return 'Grey';
+  const [hu, sa, li] = hexToHsl(hex);
+  if (li < 16 || (li < 24 && sa < 30)) return 'Black';
+  if (li > 88 && sa < 40) return 'White';
+  if (sa < 13) return li > 70 ? 'White' : li < 30 ? 'Black' : 'Grey';
+  if (hu >= 15 && hu < 50 && sa < 60) return li >= 62 ? 'Beige' : 'Brown';
+  if (hu < 12 || hu >= 345) return li > 72 ? 'Pink' : 'Red';
+  if (hu < 40) return 'Orange';
+  if (hu < 68) return 'Yellow';
+  if (hu < 168) return 'Green';
+  if (hu < 255) return 'Blue';
+  if (hu < 292) return 'Purple';
+  return 'Pink';
+}
+/** Rainbow order: red to pink, then browns, beige, white, grey, black; within a family by hue then lightness. */
+function rainbowKey(hex) {
+  const [hu, , li] = hexToHsl(hex || '#9a9a9a');
+  return FAMILY_AT[family(hex)] * 1e6 + Math.round(((hu + 330) % 360)) * 1e3 + Math.round(100 - li);
+}
+const DAY_MS = 86400000;
+const lastWear = (x) => (wears(x) ? x.worn[x.worn.length - 1] : 0);
+/** Sort and filter choices for each page. The sort is remembered on this device; the filters are not. */
+const SORTS = {
+  closet: [['new', 'Newest'], ['old', 'Oldest'], ['colour', 'Colour'], ['name', 'Name'], ['most', 'Most worn'], ['least', 'Least worn']],
+  outfits: [['new', 'Newest'], ['old', 'Oldest'], ['most', 'Most worn'], ['least', 'Least worn'], ['colour', 'Colour'], ['name', 'Name']],
+};
+const WORN = [['any', 'Any'], ['lately', 'Not lately'], ['never', 'Never']];
+const view = { closet: { sort: 'new', colours: [], worn: 'any', fav: false }, outfits: { sort: 'new', colours: [], worn: 'any', fav: false } };
+try {
+  const saved = JSON.parse(localStorage.getItem('closet.sort') || '{}');
+  for (const k of ['closet', 'outfits']) if (SORTS[k].some(([v]) => v === saved[k])) view[k].sort = saved[k];
+} catch { /* newest first */ }
+const filtered = (k) => view[k].fav || view[k].colours.length || view[k].worn !== 'any';
+const changed = (k) => filtered(k) || view[k].sort !== 'new';
+function resetView(k) { Object.assign(view[k], { colours: [], worn: 'any', fav: false }); }
+
+/** Applies a page's favourites, colour and worn filters and its sort. `cols(x)` gives a thing's colours, `created(x)` its date. */
+function sortFilter(list, k, cols, created) {
+  const v = view[k], now = Date.now();
+  let out = list;
+  if (v.fav) out = out.filter((x) => x.fav);
+  if (v.colours.length) out = out.filter((x) => cols(x).some((c) => v.colours.includes(family(c))));
+  if (v.worn === 'never') out = out.filter((x) => !wears(x));
+  if (v.worn === 'lately') out = out.filter((x) => now - lastWear(x) > 30 * DAY_MS);
+  const by = {
+    new: (a, b) => created(b) - created(a),
+    old: (a, b) => created(a) - created(b),
+    name: (a, b) => (a.name || '').localeCompare(b.name || ''),
+    most: (a, b) => wears(b) - wears(a) || lastWear(b) - lastWear(a),
+    least: (a, b) => wears(a) - wears(b) || lastWear(a) - lastWear(b),
+    colour: (a, b) => rainbowKey(cols(a)[0]) - rainbowKey(cols(b)[0]),
+  }[v.sort] || ((a, b) => created(b) - created(a));
+  return [...out].sort(by);
+}
+
+/** Search, favourites and filters for the closet or the looks page. `redraw` repaints the list below it. */
+function toolbar(k, label, redraw, families) {
+  const tb = h(`<div class="toolbar">
+    <label class="search">${svg('search')}<input type="search" placeholder="Search" aria-label="${label}" autocomplete="off" enterkeyhint="search" /><button class="clear" aria-label="Clear search" hidden>${svg('close')}</button></label>
+    <button class="tb fav" aria-label="Favourites only" aria-pressed="${view[k].fav}">${svg('heart')}</button>
+    <button class="tb filt" aria-label="Sort and filter" aria-haspopup="dialog">${svg('filter')}<i class="dot" ${filtered(k) || view[k].sort !== 'new' ? '' : 'hidden'}></i></button>
+  </div>`);
+  const inp = $('input', tb), clear = $('.clear', tb);
+  inp.value = state.search;
+  clear.hidden = !state.search;
+  inp.addEventListener('input', () => { state.search = inp.value; clear.hidden = !inp.value; redraw(); });
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+  press(clear, { tap: () => { state.search = ''; inp.value = ''; clear.hidden = true; inp.focus(); redraw(); }, hapticTap: 'select' });
+  const fav = $('.fav', tb);
+  press(fav, { tap: () => { view[k].fav = !view[k].fav; fav.setAttribute('aria-pressed', String(view[k].fav)); sync(); redraw(); }, hapticTap: 'select' });
+  const filt = $('.filt', tb);
+  const sync = () => { $('.dot', filt).hidden = !changed(k); };
+  press(filt, { tap: () => openFilters(k, families(), () => { fav.setAttribute('aria-pressed', String(view[k].fav)); sync(); redraw(); }), hapticTap: 'select' });
+  return tb;
+}
+
+/** The sort and filter sheet. Changes apply at once; `onChange` repaints the page behind. */
+function openFilters(k, families, onChange) {
+  const v = view[k];
+  const c = h(`<div class="filters"><h2>Sort and filter</h2>
+    <div class="field"><label id="flt-sort">Sort by</label><div class="wrap-chips" role="group" aria-labelledby="flt-sort" data-sort>
+      ${SORTS[k].map(([val, l]) => `<button class="chip small" data-v="${val}">${l}</button>`).join('')}</div></div>
+    ${families.length > 1 ? `<div class="field"><label id="flt-col">Colour</label><div class="wrap-chips" role="group" aria-labelledby="flt-col" data-col>
+      ${families.map((f) => `<button class="chip small col" data-v="${f}"><i style="background:${FAMILIES[FAMILY_AT[f]][1]}"></i>${f}</button>`).join('')}</div></div>` : ''}
+    <div class="field"><label id="flt-worn">Worn</label><div class="wrap-chips" role="group" aria-labelledby="flt-worn" data-worn>
+      ${WORN.map(([val, l]) => `<button class="chip small" data-v="${val}">${l}</button>`).join('')}</div></div>
+    <div class="row-btns"><button class="btn soft" data-a="reset">Reset</button><button class="btn" data-a="done">Done</button></div>
+  </div>`);
+  const s = sheet(c);
+  const paint = () => {
+    $$('[data-sort] button', c).forEach((b) => { const on = b.dataset.v === v.sort; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
+    $$('[data-col] button', c).forEach((b) => { const on = v.colours.includes(b.dataset.v); b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
+    $$('[data-worn] button', c).forEach((b) => { const on = b.dataset.v === v.worn; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
+  };
+  const apply = () => {
+    paint(); onChange();
+    try { localStorage.setItem('closet.sort', JSON.stringify({ closet: view.closet.sort, outfits: view.outfits.sort })); } catch { /* this visit only */ }
+  };
+  $$('[data-sort] button', c).forEach((b) => press(b, { tap: () => { v.sort = b.dataset.v; apply(); }, hapticTap: 'select' }));
+  $$('[data-col] button', c).forEach((b) => press(b, { tap: () => { v.colours = v.colours.includes(b.dataset.v) ? v.colours.filter((x) => x !== b.dataset.v) : [...v.colours, b.dataset.v]; apply(); }, hapticTap: 'select' }));
+  $$('[data-worn] button', c).forEach((b) => press(b, { tap: () => { v.worn = b.dataset.v; apply(); }, hapticTap: 'select' }));
+  press($('[data-a=reset]', c), { tap: () => { resetView(k); v.sort = 'new'; apply(); }, hapticTap: 'select' });
+  press($('[data-a=done]', c), { tap: () => s.close() });
+  paint();
+}
+
+// what a piece can be found by: its name, type, category and colours
+const itemWords = (i) => [i.name, i.sub, CATS[i.cat]?.label, ...mainColors(i).map(colorName)].filter(Boolean).join(' ').toLowerCase();
+/** Every word typed has to appear somewhere ("black shoes" finds black pieces among the shoes). */
+const matches = (hay, q) => q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
 
 function itemMenu(it, anchor, e) {
   contextMenu(anchor, it.name, [
@@ -558,13 +900,26 @@ function itemMenu(it, anchor, e) {
     { icon: 'look', label: 'Style a look', run: () => openEditor(null, suggestLook(it.id)) },
     { icon: 'heart', label: it.fav ? 'Remove favourite' : 'Favourite', run: async () => { await toggleFav(it, 'items'); render(); } },
     { icon: 'check', label: 'Wore today', run: () => logWear([it]) },
+    { icon: 'drop', label: inWash(it) ? 'Clean again' : 'In the wash', run: () => setWash([it], !inWash(it)) },
+    ...(state.items.filter(inWash).length > 1 ? [{ icon: 'sparkle', label: 'All clean', run: () => setWash(state.items.filter(inWash), false, true) }] : []),
     { icon: 'copy', label: 'Duplicate', run: () => duplicateItem(it) },
     { icon: 'trash', label: 'Delete', danger: true, run: () => deleteItem(it) },
   ], e);
 }
 
+async function setWash(items, on, say = false) {
+  for (const it of items) {
+    if (on) it.wash = Date.now(); else delete it.wash;
+    await db.put('items', it);
+  }
+  haptic(on ? 'light' : 'success');
+  if (say) toast('All clean');
+  render();
+}
+
 async function duplicateItem(it) {
-  const copy = { ...it, id: uid(), created: Date.now(), name: it.name + ' (copy)' };
+  const copy = { ...it, id: uid(), created: Date.now(), name: it.name + ' (copy)', fav: false, worn: [] };
+  delete copy.wash;
   await db.put('items', copy);
   state.items.push(copy);
   haptic('success'); toast('Duplicated');
@@ -572,9 +927,20 @@ async function duplicateItem(it) {
 }
 
 async function deleteItem(it) {
-  if (!(await confirmSheet('Delete this piece?', it.name))) return;
+  const used = state.outfits.filter((o) => o.pieces.some((p) => p.itemId === it.id));
+  if (!(await confirmSheet('Delete this piece?', used.length ? `${it.name}. It is in ${used.length} look${used.length === 1 ? '' : 's'}.` : it.name))) return;
   await db.del('items', it.id);
   state.items = state.items.filter((i) => i.id !== it.id);
+  forgetImgs(it.id);
+  // take it out of the looks it was in, so their pictures match what they hold; a look left empty goes too
+  for (const o of used) {
+    o.pieces = o.pieces.filter((p) => p.itemId !== it.id);
+    try {
+      if (!o.pieces.length) { await db.del('outfits', o.id); state.outfits = state.outfits.filter((x) => x.id !== o.id); continue; }
+      o.thumb = await renderThumb(o, await lookSize(o));
+      await db.put('outfits', o);
+    } catch { /* the look keeps its old picture */ }
+  }
   toast('Deleted'); render();
 }
 
@@ -584,7 +950,7 @@ function openDetail(it) {
   const cols = mainColors(it);
   const inLooks = state.outfits.filter((o) => o.pieces.some((p) => p.itemId === it.id));
   const c = h(`<div>
-    <div class="detail-img"><img src="${it.sticker}" alt="" />
+    <div class="detail-img"><img src="${stickerOf(it)}" data-st="${it.id}" alt="" />
       <button class="fav-btn ${it.fav ? 'on' : ''}" data-a="fav" aria-label="Favourite" aria-pressed="${!!it.fav}">${svg('heart')}</button></div>
     <h2>${esc(it.name)}</h2>
     <div class="detail-meta"><span>${esc(it.sub || CATS[it.cat]?.label || '')}</span><span class="dots">${cols.map((x) => `<i style="background:${x}"></i>`).join('')}</span><span>${cols.map(colorName).join(', ')}</span></div>
@@ -594,10 +960,14 @@ function openDetail(it) {
     <div class="row-btns"><button class="btn ghost" data-a="edit">Edit</button><button class="btn ghost" data-a="del">Delete</button></div>
   </div>`);
   const s = sheet(c);
-  const syncWorn = () => { const w = $('[data-worn]', c); w.textContent = wornText(it); w.hidden = !wears(it); };
+  const syncWorn = () => { const w = $('[data-worn]', c); w.textContent = [inWash(it) && 'In the wash', wornText(it)].filter(Boolean).join('. '); w.hidden = !w.textContent; };
   syncWorn();
   const fav = $('[data-a=fav]', c);
-  press(fav, { tap: async () => { await toggleFav(it, 'items'); fav.classList.toggle('on', !!it.fav); fav.setAttribute('aria-pressed', String(!!it.fav)); render(); }, hapticTap: null });
+  press(fav, { tap: async () => {
+    await toggleFav(it, 'items');
+    fav.classList.toggle('on', !!it.fav); fav.setAttribute('aria-pressed', String(!!it.fav));
+    $$(`#views [data-id="${CSS.escape(it.id)}"] .heart`).forEach((b) => b.setAttribute('aria-pressed', String(!!it.fav)));
+  }, hapticTap: null });
   $$('[data-look]', c).forEach((b) => press(b, { tap: () => { const o = state.outfits.find((x) => x.id === b.dataset.look); s.close(); if (o) openEditor(o); } }));
   press($('[data-a=wore]', c), { tap: async () => { await logWear([it]); syncWorn(); }, hapticTap: null });
   // a look built around this piece, ready to adjust
@@ -611,37 +981,69 @@ function openDetail(it) {
 const TOL_MIN = 6, TOL_MAX = 110;
 const CUT_V = 2; // version of the remover a saved strength belongs to
 
+/** Where a tap in "remove more" lands: the tapped spot if something is kept there, else a thin leftover just beside it. */
+function eraseTarget(mask, w, h, nx, ny, reach) {
+  const x0 = Math.min(w - 1, Math.max(0, Math.round(nx * w))), y0 = Math.min(h - 1, Math.max(0, Math.round(ny * h)));
+  if (mask[y0 * w + x0]) return [x0 / w, y0 / h];
+  let best = -1, bd = reach * reach + 1;
+  for (let y = Math.max(0, y0 - reach); y <= Math.min(h - 1, y0 + reach); y++) for (let x = Math.max(0, x0 - reach); x <= Math.min(w - 1, x0 + reach); x++) {
+    if (!mask[y * w + x]) continue;
+    const d = (x - x0) * (x - x0) + (y - y0) * (y - y0);
+    if (d < bd) { bd = d; best = y * w + x; }
+  }
+  if (best < 0) return null;
+  // only thin things are picked up from beside them (a stray line, a speck): the body of the piece is not.
+  // "Thin" = no solid block of kept pixels fits near the spot; a corner of the piece has one just inside it.
+  const bx = best % w, by = (best - bx) / w, r = Math.max(4, reach >> 1), t = Math.max(2, reach >> 2);
+  const R = r + t, side = 2 * R + 2, sat = new Int32Array(side * side), full = (2 * t + 1) * (2 * t + 1);
+  for (let j = 1; j < side; j++) for (let i = 1; i < side; i++) {
+    const x = bx - R + i - 1, y = by - R + j - 1;
+    const v = x >= 0 && y >= 0 && x < w && y < h ? mask[y * w + x] : 0;
+    sat[j * side + i] = v + sat[(j - 1) * side + i] + sat[j * side + i - 1] - sat[(j - 1) * side + i - 1];
+  }
+  for (let cy = R - r; cy <= R + r; cy++) for (let cx = R - r; cx <= R + r; cx++) {
+    const x1 = cx - t, y1 = cy - t, x2 = cx + t + 1, y2 = cy + t + 1;
+    if (sat[y2 * side + x2] - sat[y1 * side + x2] - sat[y2 * side + x1] + sat[y1 * side + x1] === full) return null; // the piece itself
+  }
+  return [bx / w, by / h];
+}
+
 /**
- * The background-remover controls: preview, "remove background" switch, tap-to-erase, undo and the
- * strength slider. Used by the one-piece form and by bulk upload.
+ * The background-remover controls: preview, "remove background" switch, the how-much slider and
+ * "tap to remove more" with undo. Used by the one-piece form and by bulk upload.
  * `cut` ({ raster, tolerance, seeds, removeBg, result }) is edited in place. Nothing is re-cut until
  * a control is used, so an existing sticker stays exactly as it was.
  */
 function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
   let mask = null, erasing = false, timer = null, run = 0;
-  const el = h(`<div><div class="stage"><div class="busy"><div class="spinner"></div></div></div>
-    <div class="stage-tools">
-      <button class="chip" data-a="bg"><span class="switch ${cut.removeBg ? 'on' : ''}" style="transform:scale(.7);margin:-6px -7px"></span>Remove background</button>
-      <button class="chip icon" data-a="erase" aria-label="Tap to erase" title="Tap to erase">${svg('eraser')}</button>
-      <button class="chip icon" data-a="undo" aria-label="Undo" title="Undo">${svg('undo')}</button>
+  const el = h(`<div><div class="stage"><div class="busy"><div class="spinner"></div></div><span class="stage-hint">Tap what should go</span></div>
+    <div class="cut-tools">
+      <button class="chip" data-a="bg" role="switch" aria-checked="${!!cut.removeBg}"><span class="switch ${cut.removeBg ? 'on' : ''}" style="transform:scale(.7);margin:-6px -7px"></span>Remove background</button>
     </div>
-    <div class="slider-row" data-a="tol-row"><span>Gentle</span><input type="range" min="${TOL_MIN}" max="${TOL_MAX}" value="${Math.min(TOL_MAX, Math.max(TOL_MIN, cut.tolerance))}" aria-label="Background removal strength" /><span>Strong</span></div></div>`);
+    <div class="slider-row" data-a="tol-row"><span>Less</span><input type="range" min="${TOL_MIN}" max="${TOL_MAX}" value="${Math.min(TOL_MAX, Math.max(TOL_MIN, cut.tolerance))}" aria-label="How much background to remove" /><span>More</span></div>
+    <div class="cut-more" data-a="more-row">
+      <button class="btn soft" data-a="erase" aria-pressed="false">${svg('eraser')}<span>Tap to remove more</span></button>
+      <button class="btn soft" data-a="undo">${svg('undo')}<span>Undo</span></button>
+    </div></div>`);
   host.innerHTML = '';
   host.append(el);
-  extraTools.forEach((t) => $('.stage-tools', el).append(t));
+  extraTools.forEach((t) => $('.cut-tools', el).append(t));
   const stage = $('.stage', el), bgBtn = $('[data-a=bg]', el), eraseBtn = $('[data-a=erase]', el), range = $('input[type=range]', el);
 
   function syncTools() {
-    eraseBtn.style.display = cut.removeBg ? '' : 'none';
-    $('[data-a=undo]', el).style.display = cut.removeBg && cut.seeds.length ? '' : 'none';
+    if (!cut.removeBg) erasing = false;
     $('[data-a=tol-row]', el).style.display = cut.removeBg ? '' : 'none';
-    if (!cut.removeBg) { erasing = false; eraseBtn.classList.remove('active'); }
+    $('[data-a=more-row]', el).style.display = cut.removeBg ? '' : 'none';
+    $('[data-a=undo]', el).style.display = cut.seeds.length ? '' : 'none';
+    eraseBtn.classList.toggle('active', erasing);
+    eraseBtn.setAttribute('aria-pressed', String(erasing));
+    $('span', eraseBtn).textContent = erasing ? 'Done removing' : 'Tap to remove more';
   }
   function show() {
     stage.classList.toggle('erasing', erasing);
     $$('img, canvas', stage).forEach((n) => n.remove());
     if (erasing && mask) stage.prepend(renderMaskPreview(cut.raster, mask));
-    else if (cut.result) stage.prepend(h(`<img src="${cut.result.dataURL}" alt="" />`));
+    else if (cut.result) stage.prepend(h(`<img src="${cutPreview(cut.result)}" alt="" />`));
   }
   async function process() {
     if (!cut.raster) return;
@@ -652,25 +1054,31 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     if (mine !== run) return; // a newer change superseded this one
     mask = computeMask(cut.raster, cut.tolerance, cut.seeds);
     cut.result = renderSticker(cut.raster, mask, { removeBg: cut.removeBg });
+    cut.guess = null;
+    if (cut.removeBg) { try { cut.guess = guessCategory(mask, cut.raster.width, cut.raster.height); } catch { /* no guess */ } }
     stage.classList.remove('loading');
     show();
     onChange?.(cut);
   }
 
-  press(bgBtn, { tap: () => { cut.removeBg = !cut.removeBg; $('.switch', bgBtn).classList.toggle('on', cut.removeBg); syncTools(); process(); } });
+  press(bgBtn, { tap: () => { cut.removeBg = !cut.removeBg; $('.switch', bgBtn).classList.toggle('on', cut.removeBg); bgBtn.setAttribute('aria-checked', String(cut.removeBg)); syncTools(); process(); } });
   press(eraseBtn, {
     tap: async () => {
       erasing = !erasing;
-      eraseBtn.classList.toggle('active', erasing);
-      if (erasing) {
-        toast('Tap leftover background');
-        if (!mask) { await process(); return; } // first use on an untouched sticker
-      }
+      syncTools();
+      // the form below may have scrolled the photo (and its hint) up out of sight
+      if (erasing) stage.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+      if (erasing && !mask) { await process(); return; } // first use on an untouched sticker
       show();
     },
-    long: () => { cut.seeds.length = 0; toast('Cleared'); process(); },
+    long: () => { if (!cut.seeds.length) return; cut.seeds.length = 0; toast('Cleared'); process(); },
   });
-  press($('[data-a=undo]', el), { tap: () => { if (cut.seeds.length) { cut.seeds.pop(); process(); } } });
+  press($('[data-a=undo]', el), { tap: () => {
+    if (!cut.seeds.length) return;
+    cut.seeds.pop();
+    if (!cut.seeds.length && document.activeElement === $('[data-a=undo]', el)) eraseBtn.focus({ preventScroll: true }); // Undo is about to hide
+    process();
+  } });
   let lastTick = cut.tolerance;
   range.addEventListener('input', () => {
     cut.tolerance = +range.value;
@@ -678,14 +1086,18 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     clearTimeout(timer); timer = setTimeout(() => { timer = null; process(); }, 140);
   });
   stage.addEventListener('click', (e) => {
-    if (!erasing || !cut.removeBg) return;
+    if (!erasing || !cut.removeBg || !mask) return;
     const target = $('canvas', stage);
     if (!target) return;
     const r = target.getBoundingClientRect();
     const nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height;
     if (nx < 0 || ny < 0 || nx > 1 || ny > 1) return;
+    // a finger is wider than a stray line: reach about 14 screen pixels around the tap
+    const reach = Math.min(70, Math.round(14 * cut.raster.width / Math.max(1, r.width)));
+    const hit = eraseTarget(mask, cut.raster.width, cut.raster.height, nx, ny, reach);
+    if (!hit) { haptic('light'); return; } // nothing there to remove
     haptic('select');
-    cut.seeds.push([nx, ny]);
+    cut.seeds.push(hit);
     process();
   });
   syncTools();
@@ -701,7 +1113,7 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
 
 /* ------------------------------------------------------------------ add / edit flow */
 
-async function openAdd({ item = null, cat = null, source = null } = {}) {
+async function openAdd({ item = null, cat = null, source = null, kind = 'library' } = {}) {
   const st = {
     original: item?.original || null,
     raster: null,
@@ -709,8 +1121,11 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     tolerance: item?.cut?.v === CUT_V ? item.cut.tolerance : DEFAULT_TOLERANCE,
     seeds: item?.cut?.seeds ? [...item.cut.seeds] : [],
     removeBg: item?.cut?.removeBg ?? true,
-    result: item ? { dataURL: item.sticker, colors: item.colors } : null,
+    result: item ? { dataURL: item.sticker, darkURL: item.stickerDark || null, colors: item.colors } : null,
     cat: item?.cat || cat || (state.filterCat !== 'all' ? state.filterCat : 'top'),
+    // a new piece's category follows its shape until one is chosen by hand (or was asked for)
+    autoCat: !item && !cat && state.filterCat === 'all',
+    kind, // where the photo came from, so "add another" opens the same place
     sub: item?.sub || (state.filterSub ?? null),
     // a name the app generated stays automatic, so it follows later category / type changes
     name: item && item.name !== autoName(item.colors, item.cat, item.sub) ? item.name : '',
@@ -743,7 +1158,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
         <button class="btn" data-a="cam">${svg('camera')}<span>Take photo</span></button>
         <button class="btn soft" data-a="lib">${svg('image')}<span>Choose photos</span></button>
       </div>
-      <p class="pick-hint">Use a light, plain background</p>
+      <p class="pick-hint">Use a plain, light background. Choose several photos to add them together.</p>
     </div>`);
     press($('[data-a=cam]', p), { tap: () => pickFile('camera') });
     press($('[data-a=lib]', p), { tap: () => pickFile('library') });
@@ -754,6 +1169,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   function pickFile(kind) {
     const input = kind === 'camera' ? $('#file-camera') : $('#file-library');
     input.value = '';
+    st.kind = kind;
     // several photos at once → the batch flow (only while starting a brand-new piece)
     const multi = kind === 'library' && !item && !st.raster;
     if (kind === 'library') input.multiple = multi;
@@ -791,25 +1207,45 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       { icon: 'camera', label: 'Take photo', run: () => pickFile('camera') },
       { icon: 'image', label: 'Choose photo', run: () => pickFile('library') },
     ], e) });
-    editor = mountCutout(photo, st, { onChange: syncNameHint, extraTools: [re] });
+    editor = mountCutout(photo, st, { onChange: () => { followShape(); syncNameHint(); }, extraTools: [re] });
     return editor;
+  }
+
+  // the category chip follows what the cut-out looks like, until the person picks one
+  function followShape() {
+    if (!st.autoCat || !st.guess || st.guess === st.cat) return;
+    st.cat = st.guess; st.sub = null;
+    $$('[data-cat]', details).forEach((x) => x.classList.toggle('active', x.dataset.cat === st.cat));
+    renderSubs();
   }
 
   function renderDetails() {
     details.innerHTML = '';
+    // a new piece needs only its category; the rest is tucked away (and stays open once opened)
+    const open = !!item || !!state.moreOpen;
     const d = h(`<div>
       <div class="field"><label>Category</label><div class="seg">${CAT_ORDER.map((k) => `<button data-cat="${k}" class="${st.cat === k ? 'active' : ''}">${svg(k)}${CATS[k].label}</button>`).join('')}</div></div>
-      <div class="field"><label>Type</label><div class="wrap-chips" data-subs></div></div>
-      <div class="field"><label>Name</label><input class="input" data-name placeholder="Name" value="${esc(st.name)}" maxlength="40" /></div>
-      ${item ? '' : `<div class="field"><label>Price (optional)</label><div class="price-wrap"><span>$</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
+      ${item ? '' : `<button class="more-toggle" data-a="more" aria-expanded="${open}"><span>Type, name, price</span>${svg('chev')}</button>`}
+      <div class="more ${open ? 'open' : ''}" data-more>
+        <div class="field"><label>Type</label><div class="wrap-chips" data-subs></div></div>
+        <div class="field"><label>Name</label><input class="input" data-name placeholder="Name" value="${esc(st.name)}" maxlength="40" /></div>
+        ${item ? '' : `<div class="field"><label>Price (optional)</label><div class="price-wrap"><span>$</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
+      </div>
       <button class="btn sage block" data-a="save">${item ? 'Save' : 'Add to closet'}</button>
+      ${item ? '' : '<button class="btn ghost block" data-a="next">Add and do another</button>'}
     </div>`);
     details.append(d);
     $$('[data-cat]', d).forEach((b) => press(b, { tap: () => {
-      st.cat = b.dataset.cat; st.sub = null;
+      st.cat = b.dataset.cat; st.sub = null; st.autoCat = false;
       $$('[data-cat]', d).forEach((x) => x.classList.toggle('active', x === b));
       renderSubs();
     }, hapticTap: 'select' }));
+    const more = $('[data-a=more]', d);
+    if (more) press(more, { tap: () => {
+      state.moreOpen = !$('[data-more]', d).classList.contains('open');
+      $('[data-more]', d).classList.toggle('open', state.moreOpen);
+      more.setAttribute('aria-expanded', String(state.moreOpen));
+    }, hapticTap: 'select' });
     const name = $('[data-name]', d); name.addEventListener('input', () => { st.name = name.value; });
     const price = $('[data-price]', d);
     if (price) {
@@ -817,6 +1253,14 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
       price.addEventListener('input', () => { price.value = cleanPrice(price.value); st.price = price.value; });
     }
     press($('[data-a=save]', d), { tap: save, hapticTap: null });
+    const next = $('[data-a=next]', d);
+    if (next) press(next, { tap: () => {
+      if (!st.result) { haptic('warning'); toast('Add a photo first'); return; }
+      // the camera (or the photo picker) has to open while this tap still counts; the piece is saved behind it
+      quickPick(st.kind === 'camera' ? 'camera' : 'library');
+      save();
+    }, hapticTap: null });
+    followShape();
     renderSubs();
     setTimeout(() => details.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' }), 450);
   }
@@ -829,7 +1273,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     const list = [...new Set([...CATS[st.cat].subs, ...custom, ...st.customSubs])];
     list.forEach((sname) => {
       const b = h(`<button class="chip small ${st.sub === sname ? 'active' : ''}">${esc(sname)}</button>`);
-      press(b, { tap: () => { st.sub = st.sub === sname ? null : sname; renderSubs(); }, hapticTap: 'select' });
+      press(b, { tap: () => { st.sub = st.sub === sname ? null : sname; st.autoCat = false; renderSubs(); }, hapticTap: 'select' });
       wrap.append(b);
     });
     const add = h('<button class="chip small add">Custom</button>');
@@ -855,12 +1299,14 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     if (!st.result) { haptic('warning'); toast('Add a photo first'); return; }
     const colors = mainColors(st.result);
     const rec = {
+      ...(item ? itemById(item.id) || item : {}), // favourite, wear log and anything else the form does not show
       id: item?.id || uid(),
       created: item?.created || Date.now(),
       name: (st.name || '').trim() || autoName(colors, st.cat, st.sub),
       cat: st.cat, sub: st.sub,
       price: item ? (item.price ?? null) : parsePrice(st.price), // editing never touches the price
       sticker: st.result.dataURL,
+      stickerDark: st.result.darkURL || (item && st.result.dataURL === itemById(item.id)?.sticker ? itemById(item.id)?.stickerDark : null) || null,
       colors,
       original: st.original,
       cut: { v: CUT_V, tolerance: st.tolerance, seeds: st.seeds, removeBg: st.removeBg },
@@ -868,7 +1314,7 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
     await db.put('items', rec);
     const i = state.items.findIndex((x) => x.id === rec.id);
     if (i >= 0) state.items[i] = rec; else state.items.push(rec);
-    imgCache.delete(rec.id);
+    forgetImgs(rec.id);
     haptic('success');
     toast(item ? 'Saved' : 'Added');
     s.close();
@@ -881,25 +1327,25 @@ async function openAdd({ item = null, cat = null, source = null } = {}) {
   } else if (item?.original) {
     // the saved sticker is shown as it is; it is only cut again if one of the cut-out controls is used
     try { st.raster = rasterize(await loadImage(item.original), 900); } catch { /* keep the sticker */ }
-    if (st.raster) renderStage(); else photo.innerHTML = `<div class="stage"><img src="${item.sticker}" alt="" /></div>`;
+    if (st.raster) renderStage(); else photo.innerHTML = `<div class="stage"><img src="${stickerOf(item)}" alt="" /></div>`;
     renderDetails();
   } else if (item) {
     // older piece without its photo: show the sticker only
-    photo.innerHTML = `<div class="stage"><img src="${item.sticker}" alt="" /></div>`;
+    photo.innerHTML = `<div class="stage"><img src="${stickerOf(item)}" alt="" /></div>`;
     renderDetails();
   } else renderPick();
 }
 
 /* ------------------------------------------------------------------ batch add */
 
-const BATCH_MAX = 30;
+const BATCH_MAX = 40;
 
 /** Several photos picked at once: cut them all out, ask only "what is it?" for each, add them together. */
 function openBatch(files, presetCat = null) {
   const overflow = Math.max(0, files.length - BATCH_MAX);
   // status: wait → busy → done | fail (could not be decoded) | gone (removed by hand or already saved)
   const entries = files.slice(0, BATCH_MAX).map((file) => ({
-    file, status: 'wait', cat: presetCat, result: null, original: null, el: null, shown: null, redo: false,
+    file, status: 'wait', cat: presetCat, auto: !presetCat, result: null, original: null, el: null, shown: null, redo: false,
     cut: { tolerance: DEFAULT_TOLERANCE, seeds: [], removeBg: true },
   }));
   let failed = 0, cancelled = false, saving = false, pumping = false, tuning = false;
@@ -934,7 +1380,7 @@ function openBatch(files, presetCat = null) {
         <button class="b-x" aria-label="Remove this photo">${svg('close')}</button>
       </div>`);
       $$('[data-cat]', e.el).forEach((b) => press(b, {
-        tap: () => { if (saving) return; e.cat = b.dataset.cat; paint(e); sync(); },
+        tap: () => { if (saving) return; e.cat = b.dataset.cat; e.auto = false; paint(e); sync(); },
         hapticTap: 'select',
       }));
       press($('.b-thumb', e.el), { tap: () => tune(e), hapticTap: 'select' });
@@ -943,7 +1389,7 @@ function openBatch(files, presetCat = null) {
     }
     if (e.result && e.shown !== e.result.dataURL) {
       $('.b-thumb img', e.el)?.remove();
-      $('.b-thumb', e.el).prepend(h(`<img src="${e.result.dataURL}" alt="" />`));
+      $('.b-thumb', e.el).prepend(h(`<img src="${cutPreview(e.result)}" alt="" />`));
       e.shown = e.result.dataURL;
     }
     e.el.classList.toggle('busy', e.status === 'busy');
@@ -980,7 +1426,7 @@ function openBatch(files, presetCat = null) {
 
   function setAll(cat) {
     if (saving) return;
-    live().forEach((e) => { e.cat = cat; paint(e); });
+    live().forEach((e) => { e.cat = cat; e.auto = false; paint(e); });
     sync();
     toast(`All ${CATS[cat].label.toLowerCase()}`);
   }
@@ -1001,6 +1447,7 @@ function openBatch(files, presetCat = null) {
     try { raster = rasterize(await loadImage(e.original), 900); } catch { tuning = false; toast('Photo could not be opened'); return; }
     if (e.status !== 'done' || saving) { tuning = false; return; }
     const cut = { raster, tolerance: e.cut.tolerance, seeds: [...e.cut.seeds], removeBg: e.cut.removeBg, result: e.result };
+    const cat0 = e.cat;
     let changed = false, ed = null;
     const t = h(`<div class="tuner"><h2>Fix cut-out</h2>
       <div data-ed></div>
@@ -1019,10 +1466,10 @@ function openBatch(files, presetCat = null) {
       if (!changed) return;
       e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg };
       e.result = cut.result;
+      if (e.auto && e.cat === cat0 && cut.guess) e.cat = cut.guess;
       paint(e); sync();
     } });
     ed = mountCutout($('[data-ed]', t), cut, { onChange: () => { changed = true; } });
-    mountCutout($('[data-ed]', t), cut, { onChange: () => { changed = true; } });
     press($('[data-a=ok]', t), { tap: async () => { await ed.settle(); ts.close(); } });
     const all = $('[data-a=all]', t);
     if (all) press(all, { tap: () => {
@@ -1063,7 +1510,7 @@ function openBatch(files, presetCat = null) {
       rec: {
         id: uid(), created: now + i,
         name: autoName(e.result.colors, e.cat, null), cat: e.cat, sub: null, price: null,
-        sticker: e.result.dataURL, colors: mainColors(e.result),
+        sticker: e.result.dataURL, stickerDark: e.result.darkURL || null, colors: mainColors(e.result),
         original: e.original, cut: { v: CUT_V, tolerance: e.cut.tolerance, seeds: e.cut.seeds, removeBg: e.cut.removeBg },
       },
     }));
@@ -1130,6 +1577,8 @@ function openBatch(files, presetCat = null) {
           if (e.status === 'gone') continue;
           const mask = computeMask(raster, e.cut.tolerance, e.cut.seeds);
           e.result = renderSticker(raster, mask, { removeBg: e.cut.removeBg });
+          // the category starts as what the shape looks like; a tap on the row changes it
+          if (e.auto && e.cut.removeBg) { try { e.cat = guessCategory(mask, raster.width, raster.height) || e.cat; } catch { /* left to the person */ } }
           // "use for all" may have changed the strength while this one was being cut
           if (e.redo) { e.redo = false; e.status = 'wait'; } else e.status = 'done';
         } catch {
@@ -1154,6 +1603,157 @@ function openBatch(files, presetCat = null) {
   pump();
 }
 
+/* ------------------------------------------------------------------ mix: build a fit row by row */
+
+// one row per kind of piece to begin with; more rows of a kind can be added for layers
+const mix = { rows: [] };
+const resetMix = () => { mix.rows = CAT_ORDER.map((cat) => ({ cat, id: undefined, extra: false })); };
+resetMix();
+const ONE = { top: 'Top', outer: 'Outerwear', bottom: 'Bottom', shoes: 'Shoes', acc: 'Accessory' };
+const MIX_ROWS_MAX = 3; // rows of one kind
+
+function renderMix(focusRow = null) {
+  const root = $('#view-mix');
+  let focusEl = null;
+  root.innerHTML = '';
+  if (!state.items.length) {
+    const e = h(`<div class="empty"><h3>Nothing to mix yet</h3><button class="btn">${svg('plus')} Add clothes</button></div>`);
+    press($('.btn', e), { tap: () => openAdd() });
+    root.append(e);
+    return;
+  }
+  // what a row can show: the pieces of its kind, newest first, without those in the wash (unless that leaves nothing)
+  const pool = (cat) => {
+    const all = state.items.filter((i) => i.cat === cat).sort((a, b) => b.created - a.created);
+    const clean = all.filter((i) => !inWash(i));
+    return clean.length ? clean : all;
+  };
+  // an extra row needs a second piece to make sense
+  mix.rows = mix.rows.filter((r) => !r.extra || pool(r.cat).length > 1);
+  const rows = mix.rows.filter((r) => pool(r.cat).length);
+  const taken = (r) => new Set(rows.filter((x) => x !== r && x.cat === r.cat).map((x) => x.id).filter(Boolean));
+  const wrap = h(`<div class="mix" style="--n:${rows.length}"></div>`);
+  const starts = [];
+  const save = h('<button class="btn sage" data-a="save">Save look</button>');
+  const chosen = () => [...new Set(rows.map((r) => r.id).filter(Boolean))];
+
+  rows.forEach((r, ri) => {
+    const items = pool(r.cat);
+    if (r.id && !items.some((i) => i.id === r.id)) r.id = undefined; // deleted, moved to another kind, or in the wash
+    if (r.id === undefined) {
+      // tops, bottoms and shoes start on a piece; outerwear and accessories start empty; a layer starts on a piece the other rows do not show
+      const free = items.find((i) => !taken(r).has(i.id));
+      r.id = r.extra ? (free ? free.id : null) : r.cat === 'acc' || r.cat === 'outer' ? null : items[0].id;
+    }
+    const slots = [null, ...items];
+    const row = h(`<div class="mix-row"><div class="mix-track" role="listbox" tabindex="0" aria-label="${r.extra ? 'Another ' + ONE[r.cat].toLowerCase() : CATS[r.cat].label}"></div>${r.extra ? `<button class="mix-x" aria-label="Remove this row">${svg('close')}</button>` : ''}</div>`);
+    const track = $('.mix-track', row);
+    slots.forEach((it, si) => track.append(it
+      ? h(`<button class="mix-item" role="option" tabindex="-1" id="mix-${ri}-${si}" aria-label="${esc(it.name)}"><img src="${stickerOf(it)}" data-st="${it.id}" alt="" draggable="false" /></button>`)
+      : h(`<button class="mix-item none" role="option" tabindex="-1" id="mix-${ri}-${si}" aria-label="None"><span></span></button>`)));
+    const els = [...track.children];
+    const step = () => (els.length > 1 ? els[1].offsetLeft - els[0].offsetLeft : 1);
+    let cur = Math.max(0, slots.findIndex((it) => (it ? it.id : null) === (r.id || null)));
+    let want = -1; // the place a tap, a key or Shuffle is sliding this row to
+    const mark = () => { els.forEach((el, i) => el.setAttribute('aria-selected', String(i === cur))); track.setAttribute('aria-activedescendant', els[cur].id); };
+    // the piece in the middle is the one chosen; its neighbours shrink and fade as they leave
+    const paint = () => {
+      const pos = track.scrollLeft / step();
+      els.forEach((el, i) => {
+        const t = Math.max(0, 1 - Math.abs(i - pos));
+        el.style.transform = `scale(${(0.62 + 0.38 * t).toFixed(3)})`;
+        el.style.opacity = (0.28 + 0.72 * t).toFixed(3);
+      });
+      const now = Math.max(0, Math.min(els.length - 1, Math.round(pos)));
+      if (want >= 0) { if (now !== want) return; want = -1; } // a row on its way to a piece keeps that piece chosen
+      if (now === cur) return;
+      cur = now; r.id = slots[now] ? slots[now].id : null;
+      haptic('select'); mark();
+      save.classList.toggle('off', !chosen().length);
+    };
+    let raf = 0;
+    track.addEventListener('scroll', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; paint(); }); }, { passive: true });
+    // a finger on the row, or the end of the slide, hands the choice back to where the row is
+    const settle = () => { if (want >= 0) { want = -1; paint(); } };
+    ['pointerdown', 'wheel', 'scrollend'].forEach((t) => track.addEventListener(t, settle, { passive: true }));
+    const go = (i, smooth = true) => {
+      i = Math.max(0, Math.min(els.length - 1, i));
+      if (i !== cur) { want = i; cur = i; r.id = slots[i] ? slots[i].id : null; mark(); save.classList.toggle('off', !chosen().length); }
+      track.scrollTo({ left: i * step(), behavior: smooth ? 'smooth' : 'auto' });
+    };
+    els.forEach((el, i) => press(el, { tap: () => go(i), hapticTap: null }));
+    track.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      e.preventDefault(); go(cur + (e.key === 'ArrowRight' ? 1 : -1));
+    });
+    r.go = (id) => go(Math.max(0, slots.findIndex((it) => (it ? it.id : null) === (id || null))));
+    const x = $('.mix-x', row);
+    if (x) press(x, { tap: () => { const i = mix.rows.indexOf(r); mix.rows.splice(i, 1); renderMix(mix.rows[i - 1] || mix.rows[0]); } });
+    if (r === focusRow) focusEl = track;
+    wrap.append(row);
+    starts.push(() => { track.scrollLeft = cur * step(); paint(); mark(); });
+  });
+
+  const actions = h(`<div class="mix-actions">
+    <button class="btn soft" data-a="layer" aria-label="Layer">${svg('layers')}<span>Layer</span></button>
+    <button class="btn soft" data-a="shuffle" aria-label="Shuffle">${svg('swap')}<span>Shuffle</span></button>
+  </div>`);
+  actions.append(save);
+  wrap.append(actions);
+  root.append(wrap);
+  starts.forEach((f) => f());
+  save.classList.toggle('off', !chosen().length);
+  if (focusRow) (focusEl || $('[data-a=layer]', actions)).focus({ preventScroll: true });
+
+  // a second (or third) row of a kind, for layering: a shirt under a jacket, a bag and a hat
+  const layerBtn = $('[data-a=layer]', actions);
+  press(layerBtn, { tap: (e) => {
+    const many = CAT_ORDER.filter((k) => pool(k).length > 1);
+    const can = many.filter((k) => mix.rows.filter((r) => r.cat === k).length < MIX_ROWS_MAX);
+    if (!can.length) { haptic('light'); toast(many.length ? `Up to ${MIX_ROWS_MAX} rows of each kind` : 'Add more pieces first'); return; }
+    contextMenu(layerBtn, 'Add a row', can.map((k) => ({ icon: k, label: ONE[k], run: () => {
+      const last = mix.rows.map((r) => r.cat).lastIndexOf(k);
+      const added = { cat: k, id: undefined, extra: true };
+      mix.rows.splice(last + 1, 0, added);
+      renderMix(added);
+    } })), e);
+  }, hapticTap: null });
+  // spin every row to a combination whose colours go together
+  press($('[data-a=shuffle]', actions), { tap: () => {
+    const pick = Object.fromEntries(suggestLook().map((id) => [itemById(id).cat, id]));
+    const used = {}; // per kind: what is already showing after this shuffle (a kind's main row comes before its layers)
+    rows.forEach((r) => {
+      if (!r.extra) { r.go(pick[r.cat] || null); return; }
+      const u = used[r.cat] || (used[r.cat] = new Set([pick[r.cat]]));
+      const others = pool(r.cat).filter((i) => !u.has(i.id));
+      const id = others.length && Math.random() < 0.6 ? others[Math.floor(Math.random() * others.length)].id : null;
+      if (id) u.add(id);
+      r.go(id);
+    });
+    haptic('success');
+  }, hapticTap: null });
+  let saving = false;
+  press(save, { tap: async () => {
+    const ids = chosen();
+    if (!ids.length) { haptic('warning'); toast('Choose a piece first'); return; }
+    if (saving) return;
+    saving = true;
+    try { await saveLook(ids); } catch { haptic('warning'); toast('Could not save the look'); } finally { saving = false; }
+  }, hapticTap: null });
+}
+
+/** A new look from these pieces, laid out by the app and added to the Looks page. */
+async function saveLook(ids) {
+  const board = isDark() ? BOARD_COLORS[BOARD_COLORS.length - 1] : BOARD_COLORS[0];
+  const ratio = lookRatio();
+  const o = { id: uid(), name: 'Untitled', pieces: await layoutPieces(ids, ratio, darkBoard(board)), board, created: Date.now(), updated: Date.now() };
+  o.thumb = await renderThumb(o, { W: 1, H: ratio });
+  await db.put('outfits', o);
+  state.outfits.push(o);
+  haptic('success'); toast('Saved to Looks');
+  setView('outfits');
+}
+
 /* ------------------------------------------------------------------ outfits view */
 
 function outfitColors(o) {
@@ -1164,38 +1764,117 @@ function outfitColors(o) {
   return out;
 }
 
+// what a look can be found by: its name and everything its pieces can be found by
+const lookWords = (o) => [o.name, ...o.pieces.map((p) => { const it = itemById(p.itemId); return it ? itemWords(it) : ''; })].join(' ').toLowerCase();
+
 function renderOutfits() {
   const root = $('#view-outfits');
   root.innerHTML = '';
-  const grid = h('<div class="looks"></div>');
-  const nw = h(`<button class="look new"><div><div class="plus">${svg('plus')}</div><span>New look</span></div></button>`);
-  press(nw, { tap: () => openEditor(), long: (e) => contextMenu(nw, 'New look', [
-    { icon: 'sparkle', label: 'Surprise me', run: () => surpriseLook() },
-    { icon: 'look', label: 'Blank board', run: () => openEditor() },
-  ], e) });
-  grid.append(nw);
-  [...state.outfits].sort((a, b) => b.updated - a.updated).forEach((o, idx) => {
-    const cols = outfitColors(o);
-    const card = h(`<button class="look" style="animation-delay:${(idx + 1) * 40}ms">
-      <span class="thumb-wrap"><img class="thumb" src="${o.thumb || ''}" alt="" />${o.fav ? `<span class="fav-mark">${svg('heart')}</span>` : ''}</span>
-      <span class="meta"><span class="name">${esc(o.name)}</span><span class="dots">${cols.slice(0, 5).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>`);
-    press(card, { tap: () => openEditor(o), long: (e) => contextMenu(card, o.name, [
-      { icon: 'edit', label: 'Open', run: () => openEditor(o) },
-      { icon: 'check', label: 'Wore today', run: () => logWear(o.pieces.map((p) => itemById(p.itemId)), o) },
-      { icon: 'heart', label: o.fav ? 'Remove favourite' : 'Favourite', run: async () => { await toggleFav(o, 'outfits'); renderOutfits(); } },
-      { icon: 'share', label: 'Share', run: () => shareLook(o) },
-      { icon: 'copy', label: 'Duplicate', run: async () => {
-        const copy = { ...structuredClone(o), id: uid(), name: o.name + ' ii', updated: Date.now(), worn: [], fav: false };
-        await db.put('outfits', copy); state.outfits.push(copy); haptic('success'); renderOutfits();
-      } },
-      { icon: 'trash', label: 'Delete', danger: true, run: async () => {
-        if (!(await confirmSheet('Delete this look?', o.name))) return;
-        await db.del('outfits', o.id); state.outfits = state.outfits.filter((x) => x.id !== o.id); renderOutfits();
-      } },
+  if (!state.outfits.length) {
+    // the only time the page offers "new look" itself; afterwards the + button does
+    state.search = ''; resetView('outfits');
+    const grid = h('<div class="looks"></div>');
+    const nw = h(`<button class="look new"><div><div class="plus">${svg('plus')}</div><span>New look</span></div></button>`);
+    press(nw, { tap: () => openEditor(), long: (e) => contextMenu(nw, 'New look', [
+      { icon: 'sparkle', label: 'Surprise me', run: () => surpriseLook() },
+      { icon: 'look', label: 'Blank board', run: () => openEditor() },
     ], e) });
-    grid.append(card);
-  });
-  root.append(grid);
+    grid.append(nw);
+    root.append(grid);
+    return;
+  }
+  const families = () => FAMILIES.map(([f]) => f).filter((f) => state.outfits.some((o) => outfitColors(o).some((c) => family(c) === f)));
+  root.append(toolbar('outfits', 'Search your looks', () => drawGrid(), families));
+  const host = h('<div></div>');
+  root.append(host);
+  function drawGrid() {
+    host.innerHTML = '';
+    const q = state.search.trim();
+    const looks = sortFilter(state.outfits.filter((o) => matches(lookWords(o), q)), 'outfits', outfitColors, (o) => o.created || o.updated);
+    if (!looks.length) {
+      const why = view.outfits.fav && !state.outfits.some((o) => o.fav) ? 'No favourites yet' : 'Nothing matches';
+      host.append(h(`<div class="empty"><p>${why}</p></div>`));
+      return;
+    }
+    const grid = h('<div class="looks"></div>');
+    looks.forEach((o, idx) => {
+      const cols = outfitColors(o);
+      const card = h(`<div class="look" data-id="${o.id}" style="animation-delay:${Math.min(idx, 10) * 40}ms">
+        <button class="look-open"><span class="thumb-wrap" style="background:${o.board || 'var(--card)'}"><img class="thumb" src="${o.thumb || ''}" alt="" /></span>
+        <span class="meta"><span class="name">${esc(o.name)}</span><span class="dots">${cols.slice(0, 5).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>
+        ${heartBtn(o)}<button class="tick"></button></div>`);
+      const open = $('.look-open', card), tick = $('.tick', card);
+      const paintTick = () => {
+        const n = wears(o);
+        tick.innerHTML = `${svg('check')}${n ? `<span>${n}</span>` : ''}`;
+        tick.setAttribute('aria-label', n ? `Worn ${n} time${n === 1 ? '' : 's'}. Add one` : 'Worn. Add one');
+      };
+      paintTick();
+      press(open, { tap: () => openEditor(o), long: (e) => lookMenu(o, card, e, paintTick) });
+      bindHeart($('.heart', card), o, 'outfits', () => { if (view.outfits.fav) drawGrid(); });
+      // the ticker: each tap is one more time worn (its pieces count it too); Undo takes it back
+      press(tick, {
+        tap: async () => {
+          const t = await wearLook(o);
+          paintTick();
+          toast(`Worn ${wears(o)} time${wears(o) === 1 ? '' : 's'}`, { label: 'Undo', run: async () => { await unwearLook(o, t); paintTick(); } });
+        },
+        long: (e) => contextMenu(tick, o.name, [
+          { icon: 'plus', label: 'Add a wear', run: async () => { await wearLook(o); paintTick(); } },
+          ...(wears(o) ? [{ icon: 'undo', label: 'Remove a wear', run: async () => { await unwearLook(o); paintTick(); } }] : []),
+        ], e),
+        hapticTap: null,
+      });
+      grid.append(card);
+    });
+    host.append(grid);
+  }
+  drawGrid();
+}
+
+function lookMenu(o, card, e, after) {
+  contextMenu(card, o.name, [
+    { icon: 'edit', label: 'Open', run: () => openEditor(o) },
+    { icon: 'heart', label: o.fav ? 'Remove favourite' : 'Favourite', run: async () => { await toggleFav(o, 'outfits'); renderOutfits(); } },
+    ...(wears(o) ? [{ icon: 'undo', label: 'Remove a wear', run: async () => { await unwearLook(o); after?.(); } }] : []),
+    { icon: 'share', label: 'Share', run: () => shareLook(o) },
+    { icon: 'copy', label: 'Duplicate', run: async () => {
+      const copy = { ...structuredClone(o), id: uid(), name: o.name + ' ii', created: Date.now(), updated: Date.now(), worn: [], fav: false };
+      await db.put('outfits', copy); state.outfits.push(copy); haptic('success'); renderOutfits();
+    } },
+    { icon: 'trash', label: 'Delete', danger: true, run: async () => {
+      if (!(await confirmSheet('Delete this look?', o.name))) return;
+      state.outfits = state.outfits.filter((x) => x.id !== o.id); await db.del('outfits', o.id); renderOutfits();
+    } },
+  ], e);
+}
+
+/** One more wear of a look, counted for the look and for each of its pieces with the same moment, so it can be taken back exactly. */
+async function wearLook(o) {
+  const t = Date.now();
+  o.worn = [...(o.worn || []), t].slice(-400);
+  await db.put('outfits', o);
+  for (const id of new Set(o.pieces.map((p) => p.itemId))) {
+    const it = itemById(id);
+    if (!it) continue;
+    it.worn = [...(it.worn || []), t].slice(-400);
+    await db.put('items', it);
+  }
+  haptic('success');
+  return t;
+}
+/** Takes back a wear of a look (the given one, or the latest), and the same wear of its pieces. */
+async function unwearLook(o, t = lastWear(o)) {
+  if (!t || !(o.worn || []).includes(t)) return;
+  o.worn = o.worn.filter((x) => x !== t);
+  await db.put('outfits', o);
+  for (const id of new Set(o.pieces.map((p) => p.itemId))) {
+    const it = itemById(id);
+    if (!it || !(it.worn || []).includes(t)) continue;
+    it.worn = it.worn.filter((x) => x !== t);
+    await db.put('items', it);
+  }
+  haptic('light');
 }
 
 function surpriseLook() {
@@ -1204,43 +1883,51 @@ function surpriseLook() {
   openEditor(null, ids);
 }
 
-/** Sends a look as a picture through the phone's share sheet, or saves it where sharing is not available. */
+/** Sends a look as a picture through the phone's share sheet, or saves the picture where sharing is not available or is refused. */
 async function shareLook(o) {
+  let blob, name;
   try {
-    let ratio = 1.25;
-    if (o.thumb) { try { const t = await loadImage(o.thumb); ratio = t.naturalHeight / t.naturalWidth; } catch { /* keep 4:5 */ } }
-    const cv = await drawLook(o, { W: 1, H: ratio }, 1200);
-    const blob = await new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('no image'))), 'image/png'));
-    const name = `${(o.name || 'look').replace(/[^\w\- ]+/g, '').trim() || 'look'}.png`;
-    const file = new File([blob], name, { type: 'image/png' });
-    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: o.name }); return; }
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = name; a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    toast('Image saved');
-  } catch (e) { if (e?.name !== 'AbortError') toast('Could not share'); }
+    const cv = await drawLook(o, await lookSize(o), 1200);
+    blob = await new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('no image'))), 'image/png'));
+    name = `${(o.name || 'look').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').trim() || 'look'}.png`;
+  } catch { toast('Could not make the picture'); return; }
+  const file = new File([blob], name, { type: 'image/png' });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: o.name }); return; } catch (e) { if (e?.name === 'AbortError') return; }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  if (!inApp()) toast('Image saved');
 }
 
 /* ------------------------------------------------------------------ outfit editor */
 
 const imgCache = new Map();
-function getImg(item) {
-  if (imgCache.has(item.id)) return imgCache.get(item.id);
-  const p = loadImage(item.sticker);
-  imgCache.set(item.id, p);
+/** A loaded picture of a piece. `edge` is false (white outline), true (soft dark outline) or a hex colour (tinted outline). */
+function getImg(item, edge = false) {
+  if (typeof edge === 'string') {
+    const key = item.id + ':' + edge;
+    if (!imgCache.has(key)) {
+      const p = tintedSticker(item, edge).then((url) => loadImage(url || stickerOf(item, darkBoard(edge))));
+      p.catch(() => imgCache.delete(key));
+      imgCache.set(key, p);
+    }
+    return imgCache.get(key);
+  }
+  const src = stickerOf(item, edge), key = item.id + (src !== item.sticker ? ':dark' : '');
+  if (imgCache.has(key)) return imgCache.get(key);
+  const p = loadImage(src);
+  p.catch(() => imgCache.delete(key));
+  imgCache.set(key, p);
   return p;
 }
-
-const DEFAULT_LAYOUT = {
-  top: { x: 0.38, y: 0.26, w: 0.5 },
-  bottom: { x: 0.42, y: 0.62, w: 0.42 },
-  shoes: { x: 0.72, y: 0.86, w: 0.3 },
-  acc: { x: 0.76, y: 0.42, w: 0.28 },
-};
+/** Forget every picture of a piece (after it was edited or deleted). */
+const forgetImgs = (id) => { for (const k of [...imgCache.keys()]) if (k === id || k.startsWith(id + ':')) imgCache.delete(k); };
 
 function openEditor(outfit = null, startIds = []) {
   const o = outfit ? structuredClone(outfit) : {
-    id: uid(), name: 'Untitled', pieces: [], board: isDark() ? BOARD_COLORS[BOARD_COLORS.length - 1] : BOARD_COLORS[0], updated: Date.now(),
+    id: uid(), name: 'Untitled', pieces: [], board: isDark() ? BOARD_COLORS[BOARD_COLORS.length - 1] : BOARD_COLORS[0], created: Date.now(), updated: Date.now(),
   };
   let selected = null;
   let dirty = !outfit && startIds.length > 0;
@@ -1251,43 +1938,80 @@ function openEditor(outfit = null, startIds = []) {
       <input class="input" data-name value="${esc(o.name)}" maxlength="40" />
       <button class="round dark" data-a="save" aria-label="Save">${svg('check')}</button>
     </div>
-    <div class="board"><div class="hint">Tap + to add pieces</div></div>
+    <div class="board"><div class="hint">Tap Add to choose pieces</div></div>
+    <div class="ed-tray" data-tray></div>
     <div class="editor-bar">
-      <button class="round dark" data-a="add" aria-label="Add pieces">${svg('plus')}</button>
-      <button class="round" data-a="bg" aria-label="Board colour"><span data-bgdot style="width:22px;height:22px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--ink-3)"></span></button>
-      <button class="round" data-a="shuffle" aria-label="Tidy layout">${svg('sparkle')}</button>
-      <div class="palette-tray"><div class="pill-strip" data-in aria-label="Colours in this look"></div></div>
+      <div class="bar-main">
+        <button class="tool" data-a="add"><span class="round dark">${svg('plus')}</span><small>Add</small></button>
+        <button class="tool" data-a="bg" aria-expanded="false"><span class="round"><i data-bgdot></i></span><small>Background</small></button>
+        <button class="tool" data-a="shuffle"><span class="round">${svg('sparkle')}</span><small>Arrange</small></button>
+        <div class="palette-tray"><div class="pill-strip" data-in aria-label="Colours in this look"></div></div>
+      </div>
+      <div class="bar-piece" role="toolbar" aria-label="Chosen piece">
+        <button class="tool" data-a="front"><span class="round">${svg('up')}</span><small>To front</small></button>
+        <button class="tool" data-a="backward"><span class="round">${svg('down')}</span><small>To back</small></button>
+        <button class="tool" data-a="p-swap"><span class="round">${svg('swap')}</span><small>Swap</small></button>
+        <button class="tool" data-a="flip"><span class="round">${svg('flip')}</span><small>Flip</small></button>
+        <button class="tool danger" data-a="remove"><span class="round">${svg('trash')}</span><small>Delete</small></button>
+      </div>
     </div>
   </div>`);
   const s = sheet(c, { full: true });
+  s.el.setAttribute('aria-label', 'Look');
   s.el.style.paddingBottom = 'calc(14px + env(safe-area-inset-bottom, 0px))';
   const board = $('.board', c);
-  const paintBoard = () => { board.style.background = o.board; $('[data-bgdot]', c).style.background = o.board; };
+  const nodes = new Map(); // piece -> element
+  // pieces wear the soft edge on a dark board and the white one on a light board; with an automatic
+  // background each wears an outline in its own colour (shown once it is made)
+  const pic = (it) => stickerOf(it, darkBoard(o.board));
+  function dress(p, im = $('img', nodes.get(p) || document.createElement('div'))) {
+    const it = itemById(p.itemId);
+    if (!it || !im) return;
+    const plain = pic(it);
+    if (!o.auto) { if (im.getAttribute('src') !== plain) im.src = plain; return; }
+    const want = edgeFor(it, o.board);
+    im.dataset.edge = want;
+    tintedSticker(it, want).then((url) => {
+      if (im.dataset.edge !== want || p.itemId !== it.id) return; // changed again meanwhile
+      const src = url || plain;
+      if (im.getAttribute('src') !== src) { im.onload = () => place(p); im.src = src; }
+    });
+  }
+  const paintBoard = () => {
+    board.style.background = o.board; $('[data-bgdot]', c).style.background = o.board;
+    $('[data-bgdot]', c).classList.toggle('auto', !!o.auto);
+    nodes.forEach((el, p) => dress(p, $('img', el)));
+  };
+  // an automatic background follows the pieces
+  const follow = () => { if (o.auto && o.pieces.length) { o.board = autoBoard(o); paintBoard(); } };
+  if (o.auto) o.board = autoBoard(o);
   paintBoard();
   const nameInp = $('[data-name]', c);
   nameInp.addEventListener('input', () => { o.name = nameInp.value; dirty = true; });
 
   // ----- board rendering
-  const nodes = new Map(); // piece -> element
   function bsize() { const r = board.getBoundingClientRect(); return { W: r.width, H: r.height }; }
   function place(p) {
     const el = nodes.get(p); if (!el) return;
     const { W, H } = bsize();
     const w = p.w * W;
     el.style.width = w + 'px';
-    const hgt = el.offsetHeight || w;
+    // from the picture's own proportions, so it is right even while the width is still animating
+    const im = el.firstElementChild;
+    const hgt = im.naturalWidth ? w * im.naturalHeight / im.naturalWidth : (el.offsetHeight || w);
     el.style.transform = `translate(${p.x * W - w / 2}px, ${p.y * H - hgt / 2}px) rotate(${p.rot}deg) scaleX(${p.flip ? -1 : 1})`;
     el.style.zIndex = o.pieces.indexOf(p) + 1;
   }
   function addNode(p, pop = false) {
     const it = itemById(p.itemId); if (!it) return;
-    const el = h(`<div class="bitem ${pop ? 'pop' : ''}"><img src="${it.sticker}" alt="" /><span class="handle">${svg('rotate')}</span></div>`);
+    const el = h(`<div class="bitem ${pop ? 'pop' : ''}"><img src="${pic(it)}" alt="" /><span class="handle">${svg('rotate')}</span></div>`);
     nodes.set(p, el);
     board.append(el);
     const img = $('img', el);
     if (img.complete) place(p); else img.onload = () => place(p);
     place(p);
     bindPiece(p, el);
+    if (o.auto) dress(p, img);
   }
   function refreshAll() {
     nodes.forEach((el) => el.remove()); nodes.clear();
@@ -1298,6 +2022,9 @@ function openEditor(outfit = null, startIds = []) {
   function select(p) {
     selected = p;
     nodes.forEach((el, q) => el.classList.toggle('sel', q === p));
+    // with a piece chosen, the bar offers what can be done to it
+    c.classList.toggle('has-sel', !!p);
+    if (p) { closeTray(); $('[data-a=p-swap]', c).hidden = !swapChoices(p).length; }
     syncPalette();
   }
   function sync() {
@@ -1307,19 +2034,24 @@ function openEditor(outfit = null, startIds = []) {
 
   function addPiece(itemId, pop = true) {
     const it = itemById(itemId); if (!it) return;
-    const base = DEFAULT_LAYOUT[it.cat] || { x: 0.5, y: 0.5, w: 0.36 };
-    const sameCat = o.pieces.filter((p) => itemById(p.itemId)?.cat === it.cat).length;
-    const p = { itemId, x: Math.min(0.85, base.x + sameCat * 0.07), y: Math.min(0.9, base.y + sameCat * 0.05), w: base.w, rot: (Math.random() - 0.5) * 8, flip: false };
+    // it lands where a piece of its kind belongs; Arrange sets the whole look out again
+    const { W, H } = bsize();
+    const lay = layoutLook([...o.pieces.map((q) => ({ cat: itemById(q.itemId)?.cat })), { cat: it.cat }], H / Math.max(1, W));
+    const p = { itemId, ...lay.at[lay.at.length - 1], flip: false };
     o.pieces.push(p); dirty = true;
     addNode(p, pop);
-    select(p); sync();
+    sync(); follow();
+    return p;
   }
   function removePiece(p) {
     o.pieces.splice(o.pieces.indexOf(p), 1);
     nodes.get(p)?.remove(); nodes.delete(p);
     if (selected === p) select(null);
-    dirty = true; sync();
+    dirty = true; sync(); follow();
   }
+  const toFront = (p) => { o.pieces.push(o.pieces.splice(o.pieces.indexOf(p), 1)[0]); o.pieces.forEach(place); dirty = true; };
+  const toBack = (p) => { o.pieces.unshift(o.pieces.splice(o.pieces.indexOf(p), 1)[0]); o.pieces.forEach(place); dirty = true; };
+  const flip = (p) => { p.flip = !p.flip; place(p); dirty = true; };
 
   // ----- gestures
   function bindPiece(p, el) {
@@ -1404,13 +2136,84 @@ function openEditor(outfit = null, startIds = []) {
     lastSnap = null; return r;
   }
   board.addEventListener('pointerdown', (e) => { if (e.target === board || e.target.classList.contains('hint')) select(null); });
+  board.addEventListener('pointerdown', () => closeTray(), true);
+
+  // ----- the tray that opens above the toolbar (background colours, or pieces to swap in)
+  const tray = $('[data-tray]', c);
+  tray.inert = true; // a hidden tray is not focusable or announced
+  let trayKind = null;
+  function closeTray() {
+    if (!trayKind) return;
+    trayKind = null; tray.classList.remove('open');
+    if (tray.contains(document.activeElement)) $('[data-a=bg]', c).focus({ preventScroll: true });
+    tray.inert = true;
+    $('[data-a=bg]', c).setAttribute('aria-expanded', 'false');
+  }
+  function openTray(kind, fill) {
+    const fromKeys = document.activeElement === $('[data-a=bg]', c) && document.activeElement.matches(':focus-visible');
+    trayKind = kind; tray.innerHTML = ''; fill(); tray.inert = false; tray.classList.add('open');
+    $('[data-a=bg]', c).setAttribute('aria-expanded', String(kind === 'bg'));
+    if (fromKeys) $('[aria-pressed=true]', tray)?.focus({ preventScroll: true });
+  }
+  function bgTray() {
+    if (trayKind === 'bg') { closeTray(); return; }
+    openTray('bg', () => {
+      tray.setAttribute('aria-label', 'Background colour');
+      // Auto: the board takes its colour from the pieces, and each piece's outline from its own colours
+      const cols = outfitColors(o);
+      const auto = h(`<button class="sw auto" aria-label="Automatic" aria-pressed="${!!o.auto}" style="background:${cols.length > 1 ? `conic-gradient(${cols.join(', ')}, ${cols[0]})` : cols[0] || 'var(--soft)'}">${svg('sparkle')}</button>`);
+      press(auto, { tap: () => {
+        o.auto = !o.auto;
+        if (o.auto) o.board = autoBoard(o);
+        paintBoard(); dirty = true;
+        $$('.sw', tray).forEach((x) => x.setAttribute('aria-pressed', String(x === auto ? !!o.auto : !o.auto && x.dataset.col === o.board)));
+      }, hapticTap: 'select' });
+      tray.append(auto);
+      BOARD.forEach(([label, col]) => {
+        const b = h(`<button class="sw" data-col="${col}" style="background:${col}" aria-label="${label}" aria-pressed="${!o.auto && o.board === col}"></button>`);
+        press(b, { tap: () => { o.auto = false; setBoard(col); $$('.sw', tray).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); }, hapticTap: 'select' });
+        tray.append(b);
+      });
+    });
+  }
+  // other pieces of the same kind, best colour match with the rest of the look first
+  function swapChoices(p) {
+    const cur = itemById(p.itemId);
+    if (!cur) return [];
+    const rest = o.pieces.filter((q) => q !== p).map((q) => itemById(q.itemId)).filter(Boolean);
+    const fit = (it) => (rest.length ? rest.reduce((sum, x) => sum + pairScore(it.colors?.[0], x.colors?.[0]), 0) / rest.length : 0);
+    return state.items.filter((it) => it.cat === cur.cat && it.id !== cur.id && !inWash(it)).sort((a, b) => fit(b) - fit(a));
+  }
+  function swapTray(p) {
+    if (selected !== p) select(p);
+    openTray('swap', () => {
+      tray.setAttribute('aria-label', 'Swap for another piece');
+      [itemById(p.itemId), ...swapChoices(p)].filter(Boolean).forEach((it) => {
+        const b = h(`<button class="swp" aria-label="${esc(it.name)}" aria-pressed="${it.id === p.itemId}"><img src="${stickerOf(it)}" alt="" /></button>`);
+        press(b, { tap: () => {
+          const node = nodes.get(p);
+          if (!node || !o.pieces.includes(p)) { closeTray(); return; } // the piece left the look meanwhile
+          // the new piece takes over the old one's place, size, tilt and layer
+          p.itemId = it.id;
+          const im = $('img', node);
+          im.onload = () => place(p);
+          im.src = pic(it);
+          if (o.auto) { o.board = autoBoard(o); paintBoard(); }
+          $$('.swp', tray).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+          dirty = true; syncPalette();
+        }, hapticTap: 'light' });
+        tray.append(b);
+      });
+    });
+  }
 
   function pieceMenu(p, el, e) {
     const it = itemById(p.itemId);
     contextMenu(null, it?.name, [
-      { icon: 'up', label: 'Bring to front', run: () => { o.pieces.push(o.pieces.splice(o.pieces.indexOf(p), 1)[0]); o.pieces.forEach(place); dirty = true; } },
-      { icon: 'down', label: 'Send to back', run: () => { o.pieces.unshift(o.pieces.splice(o.pieces.indexOf(p), 1)[0]); o.pieces.forEach(place); dirty = true; } },
-      { icon: 'flip', label: 'Flip', run: () => { p.flip = !p.flip; place(p); dirty = true; } },
+      ...(swapChoices(p).length ? [{ icon: 'swap', label: 'Swap', run: () => swapTray(p) }] : []),
+      { icon: 'up', label: 'Bring to front', run: () => toFront(p) },
+      { icon: 'down', label: 'Send to back', run: () => toBack(p) },
+      { icon: 'flip', label: 'Flip', run: () => flip(p) },
       { icon: 'copy', label: 'Duplicate', run: () => { const q = { ...p, x: p.x + 0.05, y: p.y + 0.04 }; o.pieces.push(q); addNode(q, true); select(q); dirty = true; sync(); } },
       { icon: 'trash', label: 'Remove from look', danger: true, run: () => removePiece(p) },
     ], e);
@@ -1432,34 +2235,42 @@ function openEditor(outfit = null, startIds = []) {
 
   // ----- toolbar
   press($('[data-a=add]', c), { tap: () => openPicker(), long: (e) => contextMenu($('[data-a=add]', c), 'Add', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => openPicker(k) })), e) });
-  const bgBtn = $('[data-a=bg]', c);
-  press(bgBtn, {
-    tap: () => { o.board = BOARD_COLORS[(BOARD_COLORS.indexOf(o.board) + 1) % BOARD_COLORS.length]; paintBoard(); dirty = true; },
-    long: (e) => contextMenu(bgBtn, 'Board', [
-      ...BOARD.map(([label, col]) => ({ icon: 'swatch', label, run: () => setBoard(col) })),
-    ], e),
-  });
+  press($('[data-a=bg]', c), { tap: bgTray, hapticTap: 'select' });
+  press($('[data-a=front]', c), { tap: () => selected && toFront(selected), hapticTap: 'select' });
+  press($('[data-a=backward]', c), { tap: () => selected && toBack(selected), hapticTap: 'select' });
+  press($('[data-a=p-swap]', c), { tap: () => selected && swapTray(selected), hapticTap: 'select' });
+  press($('[data-a=flip]', c), { tap: () => selected && flip(selected), hapticTap: 'select' });
+  press($('[data-a=remove]', c), { tap: () => selected && removePiece(selected), hapticTap: 'warning' });
   function setBoard(col) { o.board = col; paintBoard(); dirty = true; }
-  press($('[data-a=shuffle]', c), { tap: () => {
-    // tidy: rearrange pieces into the default flat-lay arrangement
-    const seen = {};
-    o.pieces.forEach((p) => {
-      const cat = itemById(p.itemId)?.cat; const base = DEFAULT_LAYOUT[cat] || { x: 0.5, y: 0.5, w: 0.36 };
-      const n = seen[cat] = (seen[cat] || 0) + 1;
-      Object.assign(p, { x: Math.min(0.85, base.x + (n - 1) * 0.08), y: Math.min(0.9, base.y + (n - 1) * 0.05), w: base.w, rot: (Math.random() - 0.5) * 6 });
-      const el = nodes.get(p); el.style.transition = 'transform .7s cubic-bezier(.34,1.56,.64,1)';
-      place(p); setTimeout(() => (el.style.transition = ''), 720);
+  /** Sets the whole look out again: tops up, bottoms under, shoes at the foot, accessories at the edges, lightly scattered. */
+  async function arrange(animate = true) {
+    const { W, H } = bsize();
+    const old = [...o.pieces];
+    const next = await layoutPieces(old.map((p) => p.itemId), H / Math.max(1, W), darkBoard(o.board));
+    if (old.length !== o.pieces.length || old.some((p, i) => o.pieces[i] !== p)) return; // the look changed while pictures loaded
+    // keep the same piece objects (the board's elements hang off them), in the new back-to-front order
+    const pool = [...old];
+    o.pieces = next.map((n) => {
+      const p = pool.splice(pool.findIndex((q) => q.itemId === n.itemId), 1)[0];
+      return Object.assign(p, { x: n.x, y: n.y, w: n.w, rot: n.rot });
     });
-    haptic('success'); dirty = true;
-  }, hapticTap: null });
+    o.pieces.forEach((p) => {
+      const el = nodes.get(p);
+      if (!el) return;
+      if (animate) { el.style.transition = 'transform .7s cubic-bezier(.34,1.3,.64,1), width .7s cubic-bezier(.34,1.3,.64,1)'; setTimeout(() => (el.style.transition = ''), 740); }
+      place(p);
+    });
+    dirty = true;
+  }
+  press($('[data-a=shuffle]', c), { tap: () => { if (!o.pieces.length) return; closeTray(); haptic('success'); arrange(); }, hapticTap: null });
 
   async function save() {
     o.name = nameInp.value.trim() || 'Untitled';
     o.updated = Date.now();
     o.thumb = await renderThumb(o, bsize());
-    await db.put('outfits', o);
     const i = state.outfits.findIndex((x) => x.id === o.id);
     if (i >= 0) state.outfits[i] = o; else state.outfits.push(o);
+    await db.put('outfits', o);
     dirty = false;
     haptic('success'); toast('Saved');
   }
@@ -1474,6 +2285,7 @@ function openEditor(outfit = null, startIds = []) {
 
   // ----- piece picker
   function openPicker(onlyCat = null) {
+    closeTray();
     let cat = onlyCat || 'all';
     const pc = h(`<div><h2>Add pieces</h2>
       <div class="chips" data-c></div><div class="picker-grid" data-g></div></div>`);
@@ -1490,7 +2302,7 @@ function openEditor(outfit = null, startIds = []) {
       if (!list.length) g.append(h(`<p style="grid-column:1/-1;color:var(--ink-3);text-align:center;padding:30px 0">${state.items.length ? 'No pieces' : 'Your closet is empty'}</p>`));
       list.forEach((it, idx) => {
         const inLook = o.pieces.some((p) => p.itemId === it.id);
-        const b = h(`<button class="pick-item ${inLook ? 'in' : ''}" style="animation:pieceIn .5s ${idx * 25}ms both cubic-bezier(.22,1,.36,1)"><img src="${it.sticker}" alt="" /><span class="on">${svg('check')}</span></button>`);
+        const b = h(`<button class="pick-item ${inLook ? 'in' : ''} ${inWash(it) ? 'wash' : ''}" aria-label="${esc(it.name)}" style="animation:pieceIn .5s ${Math.min(idx, 14) * 25}ms both cubic-bezier(.22,1,.36,1)"><img src="${stickerOf(it)}" alt="" /><span class="on">${svg('check')}</span></button>`);
         press(b, {
           tap: () => {
             const existing = o.pieces.filter((p) => p.itemId === it.id);
@@ -1509,9 +2321,11 @@ function openEditor(outfit = null, startIds = []) {
   }
 
   requestAnimationFrame(() => {
+    const { W, H } = bsize();
+    rememberBoard(W, H);
     refreshAll();
     startIds.forEach((id) => addPiece(id));
-    if (startIds.length) select(null);
+    if (startIds.length) { select(null); arrange(false); }
     if (!o.pieces.length && state.items.length) setTimeout(() => openPicker(state.filterCat !== 'all' ? state.filterCat : null), 500);
   });
   const onResize = () => o.pieces.forEach(place);
@@ -1519,6 +2333,21 @@ function openEditor(outfit = null, startIds = []) {
   const close0 = s.close; s.close = () => { window.removeEventListener('resize', onResize); close0(); };
 }
 
+/** Height / width of the look board on this phone (measured whenever the editor opens; estimated before that). */
+let boardRatio = 0;
+try { boardRatio = Number(localStorage.getItem('closet.board')) || 0; } catch { /* estimated */ }
+const lookRatio = () => boardRatio || Math.min(2.2, Math.max(1.2, (window.innerHeight - 170) / Math.max(200, Math.min(window.innerWidth, 720) - 40)));
+function rememberBoard(W, H) {
+  if (W < 80 || H < 80) return;
+  boardRatio = H / W;
+  try { localStorage.setItem('closet.board', boardRatio.toFixed(3)); } catch { /* measured again next time */ }
+}
+/** The proportions a saved look was drawn with (taken from its picture). */
+async function lookSize(o) {
+  let ratio = lookRatio();
+  if (o.thumb) { try { const t = await loadImage(o.thumb); ratio = t.naturalHeight / t.naturalWidth || ratio; } catch { /* keep the estimate */ } }
+  return { W: 1, H: ratio };
+}
 async function renderThumb(o, size) {
   return (await drawLook(o, size, 600)).toDataURL('image/jpeg', 0.82);
 }
@@ -1531,7 +2360,7 @@ async function drawLook(o, { W, H }, width) {
   ctx.fillStyle = o.board; ctx.fillRect(0, 0, cw, ch);
   for (const p of o.pieces) {
     const it = itemById(p.itemId); if (!it) continue;
-    const img = await getImg(it);
+    const img = await getImg(it, edgeOf(o, it));
     const w = p.w * cw, hgt = w * img.naturalHeight / img.naturalWidth;
     ctx.save();
     ctx.translate(p.x * cw, p.y * ch);
@@ -1545,36 +2374,58 @@ async function drawLook(o, { W, H }, width) {
 
 /* ------------------------------------------------------------------ tally + settings */
 
-function openTally() {
-  const c = h('<div class="breakdown"></div>');
-  const draw = () => {
-    const t = totals();
-    const maxN = Math.max(1, ...CAT_ORDER.map((k) => t.by[k].n));
-    const unpriced = t.n - t.priced;
-    const status = !t.n ? 'No pieces' : unpriced ? `${unpriced} to price` : 'All priced';
-    // how often each piece appears in a look
-    const uses = new Map();
-    state.outfits.forEach((o) => new Set(o.pieces.map((p) => p.itemId)).forEach((id) => uses.set(id, (uses.get(id) || 0) + 1)));
-    const mostStyled = state.items.filter((i) => uses.get(i.id)).sort((x, y) => uses.get(y.id) - uses.get(x.id))[0];
-    const mostWorn = state.items.filter((i) => wears(i)).sort((x, y) => wears(y) - wears(x))[0];
-    c.innerHTML = `<h2>Stats</h2>
-      <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'}</small></div>
-      ${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 80}ms"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}
-      <div class="kv">
-        <div><small>Looks</small><b>${state.outfits.length}</b></div>
-        <div><small>${mostWorn ? 'Most worn' : 'Most styled'}</small><b>${mostWorn ? esc(mostWorn.name) : mostStyled ? esc(mostStyled.name) : 'None'}</b></div>
-      </div>
-      <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}, ${status}. Open the price list">
-        <span class="vp-l">Closet value</span><span class="vp-v">${money(t.v)}</span>
-        <span class="vp-s">${status}</span>${svg('back', 'class="vp-c"')}
-      </button>`;
-    // after pricing: refresh the numbers and hand focus back to the pill
-    const prices = () => openPrices(() => { draw(); $('[data-a=prices]', c)?.focus({ preventScroll: true }); });
-    press($('[data-a=prices]', c), { tap: prices, long: prices, hapticTap: 'select' });
-  };
-  draw();
-  markTab('tally');
-  sheet(c, { onClose: () => markTab(state.view) });
+function renderStats() {
+  const root = $('#view-stats');
+  root.innerHTML = '';
+  if (!state.items.length) {
+    const e = h(`<div class="empty"><h3>Nothing to count yet</h3><button class="btn">${svg('plus')} Add clothes</button></div>`);
+    press($('.btn', e), { tap: () => openAdd() });
+    root.append(e);
+    return;
+  }
+  const t = totals(), now = Date.now();
+  const maxN = Math.max(1, ...CAT_ORDER.map((k) => t.by[k].n));
+  const unpriced = t.n - t.priced;
+  const status = unpriced ? `${unpriced} to price` : 'All priced';
+  const worn = state.items.filter((i) => wears(i)).sort((x, y) => wears(y) - wears(x) || lastWear(y) - lastWear(x));
+  const lately = state.items.filter((i) => (i.worn || []).some((w) => now - w < 30 * DAY_MS)).length;
+  const topLook = state.outfits.filter((o) => wears(o)).sort((x, y) => wears(y) - wears(x))[0];
+  // "not worn lately" only means something once wears are being logged
+  const logging = state.items.some((i) => (i.worn || []).some((w) => now - w < 45 * DAY_MS));
+  const resting = state.items.filter((i) => now - lastWear(i) > 30 * DAY_MS).length;
+  const palette = state.items.map((i) => mainColors(i)[0]).filter(Boolean).sort((a, b) => rainbowKey(a) - rainbowKey(b));
+  const c = h(`<div class="stats">
+    <div class="big-total"><div class="v">${t.n}</div><small>piece${t.n === 1 ? '' : 's'}</small></div>
+    <div class="breakdown">${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 70}ms"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}</div>
+    <div class="kv three">
+      <div><small>Looks</small><b>${state.outfits.length}</b></div>
+      <div><small>Favourites</small><b>${state.items.filter((i) => i.fav).length}</b></div>
+      <div><small>Worn this month</small><b>${lately}</b></div>
+    </div>
+    ${worn.length ? `<h3 class="st-h">Most worn</h3><div class="st-pieces">${worn.slice(0, 3).map((it) => `<button data-piece="${it.id}" aria-label="${esc(it.name)}, worn ${wears(it)} times"><span class="st-tile"><img src="${stickerOf(it)}" alt="" /></span><span class="st-n">${wears(it)}×</span></button>`).join('')}</div>` : ''}
+    ${topLook ? `<h3 class="st-h">Most worn look</h3><button class="st-look" data-look="${topLook.id}"><span class="thumb-wrap" style="background:${topLook.board}"><img src="${topLook.thumb || ''}" alt="" /></span><span><b>${esc(topLook.name)}</b><small>${wears(topLook)}×</small></span></button>` : ''}
+    ${logging && resting ? `<button class="st-row" data-a="resting"><span>Not worn lately</span><b>${resting}</b>${svg('back', 'class="vp-c"')}</button>` : ''}
+    ${palette.length > 1 ? `<h3 class="st-h">Colours</h3><div class="st-palette" role="img" aria-label="The colours of your closet">${palette.map((col) => `<i style="background:${col}"></i>`).join('')}</div>` : ''}
+    <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}, ${status}. Open the price list">
+      <span class="vp-l">Closet value</span><span class="vp-v">${money(t.v)}</span>
+      <span class="vp-s">${status}</span>${svg('back', 'class="vp-c"')}
+    </button>
+  </div>`);
+  root.append(c);
+  $$('[data-piece]', c).forEach((b) => press(b, { tap: () => { const it = itemById(b.dataset.piece); if (it) openDetail(it); } }));
+  const tl = $('[data-look]', c);
+  if (tl) press(tl, { tap: () => { const o = state.outfits.find((x) => x.id === tl.dataset.look); if (o) openEditor(o); } });
+  const rest = $('[data-a=resting]', c);
+  if (rest) press(rest, { tap: () => {
+    // the closet, showing only what has not been worn for a month
+    setView('closet');
+    resetView('closet'); view.closet.worn = 'lately'; view.closet.sort = 'least';
+    state.filterCat = 'all'; state.filterSub = null;
+    renderCloset();
+  } });
+  // after pricing: refresh the numbers and hand focus back to the pill
+  const prices = () => openPrices(() => { if (state.view === 'stats') { renderStats(); $('#view-stats [data-a=prices]')?.focus({ preventScroll: true }); } });
+  press($('[data-a=prices]', c), { tap: prices, long: prices, hapticTap: 'select' });
 }
 
 /** The one place prices are listed and edited. Unpriced pieces come first. */
@@ -1628,7 +2479,7 @@ function openPrices(onClose) {
     list.append(h(`<div class="price-head">${title}</div>`));
     items.forEach((it) => {
       const row = h(`<div class="price-row">
-        <img src="${it.sticker}" alt="" />
+        <img src="${stickerOf(it)}" alt="" />
         <div class="pr-text"><div class="pr-name">${esc(it.name)}</div><div class="pr-sub">${esc(it.sub || CATS[it.cat]?.label || '')}</div></div>
         <label class="pr-input"><span>$</span><input inputmode="decimal" enterkeyhint="next" autocomplete="off" maxlength="9" placeholder="0" aria-label="Price of ${esc(it.name)}" value="${isPriced(it) ? priceText(it.price) : ''}" /></label>
       </div>`);
@@ -1689,26 +2540,21 @@ function openPrices(onClose) {
   } });
 }
 
-const TEXT_SIZES = [[1, 'Default'], [1.12, 'Large'], [1.25, 'Larger']];
 function openSettings() {
   const c = h(`<div><h2>Settings</h2>
     <div class="field"><label id="set-theme">Appearance</label><div class="seg three" role="group" aria-labelledby="set-theme">
       ${[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-theme-opt="${k}">${l}</button>`).join('')}</div></div>
-    <div class="field"><label id="set-text">Text size</label><div class="seg three" role="group" aria-labelledby="set-text">
-      ${TEXT_SIZES.map(([v, l]) => `<button data-text-opt="${v}">${l}</button>`).join('')}</div></div>
-    <div class="opt"><span id="set-contrast">Higher contrast</span><button class="switch" role="switch" data-a="contrast" aria-labelledby="set-contrast"></button></div>
-    <div class="opt" style="margin-bottom:22px"><span id="set-motion">Reduce motion</span><button class="switch" role="switch" data-a="motion" aria-labelledby="set-motion"></button></div>
+    <div class="opt" style="margin-bottom:22px"><span id="set-contrast">Higher contrast</span><button class="switch" role="switch" data-a="contrast" aria-labelledby="set-contrast"></button></div>
     <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="exp">Backup</button><button class="btn soft" data-a="imp">Restore</button></div>
     <button class="btn ghost block" data-a="wipe">Clear everything</button></div>`);
   const s = sheet(c);
   const sync = () => {
     $$('[data-theme-opt]', c).forEach((b) => { const on = b.dataset.themeOpt === prefs.theme; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
-    $$('[data-text-opt]', c).forEach((b) => { const on = Number(b.dataset.textOpt) === prefs.text; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
-    for (const k of ['contrast', 'motion']) { const b = $(`[data-a=${k}]`, c); b.classList.toggle('on', prefs[k]); b.setAttribute('aria-checked', String(prefs[k])); }
+    const b = $('[data-a=contrast]', c); b.classList.toggle('on', prefs.contrast); b.setAttribute('aria-checked', String(prefs.contrast));
   };
-  $$('[data-theme-opt]', c).forEach((b) => press(b, { tap: () => { prefs.theme = b.dataset.themeOpt; applyPrefs(); sync(); }, hapticTap: 'select' }));
-  $$('[data-text-opt]', c).forEach((b) => press(b, { tap: () => { prefs.text = Number(b.dataset.textOpt); applyPrefs(); sync(); moveTabInd(); }, hapticTap: 'select' }));
-  for (const k of ['contrast', 'motion']) press($(`[data-a=${k}]`, c), { tap: () => { prefs[k] = !prefs[k]; applyPrefs(); sync(); }, hapticTap: 'select' });
+  // pieces are drawn with a different sticker edge on dark, so the page behind is drawn again
+  $$('[data-theme-opt]', c).forEach((b) => press(b, { tap: () => { prefs.theme = b.dataset.themeOpt; applyPrefs(); sync(); render(); }, hapticTap: 'select' }));
+  press($('[data-a=contrast]', c), { tap: () => { prefs.contrast = !prefs.contrast; applyPrefs(); sync(); }, hapticTap: 'select' });
   sync();
   press($('[data-a=exp]', c), { tap: exportData });
   press($('[data-a=imp]', c), { tap: () => { const f = $('#file-import'); f.value = ''; f.onchange = () => f.files[0] && importData(f.files[0]).then(() => s.close()); f.click(); } });
@@ -1716,48 +2562,102 @@ function openSettings() {
     s.close();
     if (!(await confirmSheet('Clear everything?', 'All pieces and looks will be deleted.', 'Clear'))) return;
     await db.clear('items'); await db.clear('outfits');
-    state.items = []; state.outfits = []; render(); toast('Cleared');
+    state.items = []; state.outfits = []; resetMix(); imgCache.clear(); resetClosetFilters(); render(); toast('Cleared');
   } });
 }
 
 async function exportData() {
-  const blob = new Blob([JSON.stringify({ version: 1, exported: new Date().toISOString(), items: state.items, outfits: state.outfits })], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ version: 2, exported: new Date().toISOString(), items: state.items, outfits: state.outfits })], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `my-closet-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  haptic('success'); toast('Backup saved');
+  // in the iOS app the file goes to the share sheet, which speaks for itself
+  haptic('success'); if (!inApp()) toast('Backup saved');
 }
 async function importData(file) {
   try {
     const data = JSON.parse(await file.text());
-    for (const it of data.items || []) await db.put('items', it);
+    for (const it of data.items || []) { if ((data.version || 1) < 2) toOuter(it); await db.put('items', it); }
     for (const o of data.outfits || []) await db.put('outfits', o);
     await load(); render();
     haptic('success'); toast(`Restored ${data.items?.length || 0} pieces`);
+    edgeOlderPieces();
   } catch { haptic('warning'); toast('File could not be read'); }
 }
 
 /* ------------------------------------------------------------------ boot */
 
+/** Gives older pieces their soft-edged picture (made from the white-edged one), a piece at a time, without holding anything up. */
+let edging = false;
+let edgeAgain = false;
+async function edgeOlderPieces() {
+  if (edging) { edgeAgain = true; return; }
+  edging = true;
+  const done = new Set();
+  try {
+    for (const it of [...state.items]) {
+      if (it.stickerDark || !it.sticker) continue;
+      try {
+        const url = await retintSticker(it.sticker, EDGE_DARK);
+        const cur = itemById(it.id);
+        if (!url || !cur || cur.sticker !== it.sticker || cur.stickerDark) continue; // edited or deleted meanwhile
+        cur.stickerDark = url;
+        await db.put('items', cur);
+        done.add(cur.id);
+        if (isDark()) $$(`img[data-st="${CSS.escape(cur.id)}"]`).forEach((img) => { img.src = url; });
+      } catch { /* this one keeps its white edge */ }
+      await pause(40);
+    }
+    // looks on a dark board were drawn with the white edge: draw those again
+    for (const o of done.size ? [...state.outfits] : []) {
+      if (!darkBoard(o.board) || !o.pieces.some((p) => done.has(p.itemId))) continue;
+      try {
+        const thumb = await renderThumb(o, await lookSize(o));
+        if (state.outfits.find((x) => x.id === o.id) !== o) continue; // edited, deleted or restored meanwhile
+        o.thumb = thumb;
+        await db.put('outfits', o);
+        $$(`#view-outfits .look[data-id="${CSS.escape(o.id)}"] img.thumb`).forEach((img) => { img.src = thumb; });
+      } catch { /* keeps its old picture */ }
+    }
+  } finally {
+    edging = false;
+    if (edgeAgain) { edgeAgain = false; edgeOlderPieces(); }
+  }
+}
+
+function toOuter(it) {
+  if (it?.cat !== 'top' || !OUTER_SUBS.has(it.sub)) return false;
+  it.cat = 'outer';
+  return true;
+}
+
 async function load() {
   const [items, outfits] = await Promise.all([db.all('items'), db.all('outfits')]);
   state.items = items || [];
   state.outfits = outfits || [];
+  // wash marks older than a week have lifted
+  for (const it of state.items) if (it.wash && !inWash(it)) { delete it.wash; db.put('items', it).catch(() => {}); }
+  // Outerwear arrived after some jackets and coats were filed under Tops: move those once
+  let moved = false;
+  try { moved = localStorage.getItem('closet.outer') === '1'; } catch { /* moved again next time, harmlessly */ }
+  if (!moved) {
+    for (const it of state.items) if (toOuter(it)) db.put('items', it).catch(() => {});
+    try { localStorage.setItem('closet.outer', '1'); } catch { /* see above */ }
+  }
 }
 
 function bindChrome() {
   $$('.tab[data-view]').forEach((t) => press(t, {
     tap: () => setView(t.dataset.view),
-    long: t.dataset.view === 'closet' ? (e) => contextMenu(t, 'Closet', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => { state.filterCat = k; state.filterSub = null; if (state.view !== 'closet') setView('closet'); else renderCloset(); } })), e)
+    long: t.dataset.view === 'mix' ? null : t.dataset.view === 'stats' ? () => openPrices() : t.dataset.view === 'closet' ? (e) => contextMenu(t, 'Closet', CAT_ORDER.map((k) => ({ icon: k, label: CATS[k].label, run: () => { state.filterCat = k; state.filterSub = null; if (state.view !== 'closet') setView('closet'); else renderCloset(); } })), e)
       : (e) => contextMenu(t, 'Looks', [
         { icon: 'plus', label: 'New look', run: () => openEditor() },
         { icon: 'sparkle', label: 'Surprise me', run: surpriseLook },
       ], e),
     hapticTap: 'select',
   }));
-  press($('#tally-tab'), { tap: openTally, long: () => openPrices(), hapticTap: 'select' });
   const fab = $('#fab');
   press(fab, {
     // the + offers the two things there are to make
@@ -1774,13 +2674,31 @@ function bindChrome() {
     ], e),
     hapticTap: null, // the menu gives its own
   });
-  press($('#settings-btn'), { tap: openSettings, long: openTally });
-  press($('#search-btn'), { tap: () => toggleSearch(), hapticTap: 'select' });
+  press($('#settings-btn'), { tap: openSettings, long: () => setView('stats') });
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || !stack.length) return;
     const top = stack[stack.length - 1];
     (top.dismiss || top.close)(); // a sheet can ask before it closes (the batch sheet does)
   });
+}
+
+/**
+ * Shortcuts from outside the page: the iOS app's home-screen quick actions call window.closetAction(name), and an
+ * installed web app's shortcuts open the page with #action=name. Ignored while something is open on screen.
+ */
+function closetAction(name) {
+  if (stack.length || menuOpen) return false;
+  const run = { add: () => openAdd(), look: () => openEditor(), mix: () => setView('mix'), stats: () => setView('stats'), closet: () => setView('closet'), looks: () => setView('outfits') }[name];
+  if (!run) return false;
+  run();
+  return true;
+}
+window.closetAction = closetAction;
+function actionFromHash() {
+  const m = /(?:^#|&)action=([a-z]+)/.exec(location.hash);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname + location.search); // once only
+  closetAction(m[1]);
 }
 
 function quickPick(kind) {
@@ -1790,17 +2708,20 @@ function quickPick(kind) {
   input.onchange = () => {
     const files = [...(input.files || [])];
     if (files.length > 1) openBatch(files, state.filterCat !== 'all' ? state.filterCat : null);
-    else if (files[0]) openAdd({ source: files[0] });
+    else if (files[0]) openAdd({ source: files[0], kind });
   };
   input.click();
 }
 
 (async function boot() {
   applyPrefs(false);
-  window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => applyPrefs(false));
+  window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => { applyPrefs(false); render(); });
   bindChrome();
   await load();
   render();
+  setTimeout(edgeOlderPieces, 900);
+  actionFromHash();
+  window.addEventListener('hashchange', actionFromHash);
   moveTabInd();
   window.addEventListener('resize', moveTabInd);
   document.fonts?.ready?.then(moveTabInd);
@@ -1808,4 +2729,4 @@ function quickPick(kind) {
 })();
 
 // exposed for debugging / tests
-window.__closet = { state, openAdd, openEditor, suggestLook, pairScore };
+window.__closet = { state, mix, openAdd, openEditor, suggestLook, pairScore, layoutLook, eraseTarget, autoBoard, edgeFor };

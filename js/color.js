@@ -33,7 +33,7 @@ const NAMED = [
   ['Green', '#33dd33'], ['Red', '#e8211d'], ['Yellow', '#ffe81a'], ['Orange', '#ff8c1a'], ['Pink', '#ff5fa2'], ['Teal', '#12b5b0'],
 ];
 // CIE Lab, so a muted green reads as "Sage" rather than the nearest grey.
-function hexToLab(hex) {
+export function hexToLab(hex) {
   const [r, g, b] = hexToRgb(hex).map((v) => { v /= 255; return v > 0.04045 ? ((v + 0.055) / 1.055) ** 2.4 : v / 12.92; });
   const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
   const x = f((r * 0.4124 + g * 0.3576 + b * 0.1805) / 0.95047);
