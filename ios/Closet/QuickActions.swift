@@ -9,7 +9,8 @@ import UIKit
 final class QuickActions {
     static let shared = QuickActions()
 
-    static let names: Set<String> = ["add", "look", "mix", "stats"]
+    // "stats" is the old name of "more", kept for a home screen that still shows the old item
+    static let names: Set<String> = ["add", "look", "mix", "more", "stats"]
 
     /// An action that arrived before a web view could take it (a cold launch).
     private var pending: String?

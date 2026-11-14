@@ -8,6 +8,13 @@
 	<string>Choose photos of your clothes to add them to your closet.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Save pictures of your looks to your photos.</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
 	<key>UIApplicationShortcutItems</key>
 	<array>
 		<dict>
@@ -36,11 +43,11 @@
 		</dict>
 		<dict>
 			<key>UIApplicationShortcutItemType</key>
-			<string>stats</string>
+			<string>more</string>
 			<key>UIApplicationShortcutItemTitle</key>
-			<string>Stats</string>
+			<string>More</string>
 			<key>UIApplicationShortcutItemIconSymbolName</key>
-			<string>chart.bar</string>
+			<string>ellipsis.circle</string>
 		</dict>
 	</array>
 </dict>

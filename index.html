@@ -12,15 +12,13 @@
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icons/icon-180.png" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;1,500&display=swap" rel="stylesheet" />
+  <link rel="preload" href="css/fonts/cormorant-garamond-latin-500-italic.woff2" as="font" type="font/woff2" crossorigin />
   <script>
     // appearance choices, applied before the page paints
     try {
       var p = JSON.parse(localStorage.getItem('closet.prefs') || '{}'), r = document.documentElement;
       if (p.theme === 'light' || p.theme === 'dark') r.dataset.theme = p.theme;
-      if (p.contrast) r.dataset.contrast = 'more';
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.chrome) r.classList.add('native-bar');
     } catch (e) {}
   </script>
   <link rel="stylesheet" href="css/style.css" />
@@ -29,18 +27,14 @@
   <div id="app">
     <header class="top">
       <h1 class="title" id="view-title">My closet</h1>
-      <div class="top-actions">
-        <button class="icon-btn" id="settings-btn" aria-label="Settings">
-          <svg viewBox="0 0 24 24"><path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.6"/><circle cx="8" cy="17" r="2.6"/></svg>
-        </button>
-      </div>
+      <button class="text-btn" id="select-btn" hidden>Select</button>
     </header>
 
     <main id="views">
       <section class="view active" id="view-closet" data-title="My closet"></section>
       <section class="view" id="view-mix" data-title="Mix"></section>
       <section class="view" id="view-outfits" data-title="Looks"></section>
-      <section class="view" id="view-stats" data-title="Stats"></section>
+      <section class="view" id="view-more" data-title="More"></section>
     </main>
 
     <nav class="tabbar" id="tabbar">
@@ -58,9 +52,9 @@
           <svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="9" rx="1"/><rect x="13.5" y="3.5" width="7" height="5" rx="1"/><rect x="13.5" y="11.5" width="7" height="9" rx="1"/><rect x="3.5" y="15.5" width="7" height="5" rx="1"/></svg>
           <span>Looks</span>
         </button>
-        <button class="tab" id="tally-tab" data-view="stats" aria-label="Stats">
-          <svg viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg>
-          <span>Stats</span>
+        <button class="tab" id="more-tab" data-view="more" aria-label="More">
+          <svg viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18.5" cy="12" r="1.4"/></svg>
+          <span>More</span>
         </button>
       </div>
       <button class="fab" id="fab" aria-label="Add clothes or create a look">
