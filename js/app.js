@@ -742,9 +742,25 @@ function render() {
 
 // Names a piece from its main colour and what it is: "Sage knit", "Denim jeans", "Beige accessory".
 const SINGULAR = { Blazers: 'blazer', Puffers: 'puffer', Vests: 'vest', Raincoats: 'raincoat', 'T-shirts': 't-shirt', Shirts: 'shirt', Blouses: 'blouse', Knits: 'knit', Hoodies: 'hoodie', Tanks: 'tank', Jackets: 'jacket', Coats: 'coat', Dresses: 'dress', Skirts: 'skirt', Bags: 'bag', Hats: 'hat', Belts: 'belt', Scarves: 'scarf', Watches: 'watch' };
-const CAT_NOUN = { top: 'top', outer: 'jacket', bottom: 'bottoms', shoes: 'shoes', acc: 'accessory' };
-function autoName(colors, cat, sub) {
-  const noun = sub ? (SINGULAR[sub] || sub.toLowerCase()) : (CAT_NOUN[cat] || 'item');
+const CAT_NOUN = { top: 'Top', outer: 'Outerwear', bottom: 'Bottoms', shoes: 'Shoes', acc: 'Accessory' };
+// words that name a pair, or are plural anyway, stay as they are ("Jeans", "Boots")
+const PLURAL_ONLY = /(jeans|trousers|shorts|leggings|pants|tights|overalls|dungarees|pyjamas|pajamas|joggers|glasses|boots|sneakers|trainers|heels|flats|sandals|loafers|slippers|socks|clothes)$/i;
+/** A type as one item: "T-shirts" is a "T-shirt"; an own type "Crop tops" is a "Crop top". */
+const typeNoun = (sub) => {
+  let s = SINGULAR[sub];
+  if (!s) s = /[^s]s$/i.test(sub) && !PLURAL_ONLY.test(sub) ? sub.slice(0, -1) : sub;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+};
+/** The name an item gets when none is typed: its brand and type ("Nike T-shirt"), or its kind ("Top"). */
+function autoName(cat, sub, brand) {
+  const noun = sub ? typeNoun(sub) : (CAT_NOUN[cat] || 'Item');
+  const b = (brand || '').trim();
+  return b ? `${b} ${noun}` : noun;
+}
+/** The names the app used to make, from a colour it often got wrong: such a name was never typed by anyone. */
+function oldAutoName(colors, cat, sub) {
+  const old = { top: 'top', outer: 'jacket', bottom: 'bottoms', shoes: 'shoes', acc: 'accessory' };
+  const noun = sub ? (SINGULAR[sub] || sub.toLowerCase()) : (old[cat] || 'item');
   const n = `${colors?.[0] ? colorName(colors[0]) + ' ' : ''}${noun}`;
   return n.charAt(0).toUpperCase() + n.slice(1);
 }
@@ -817,7 +833,8 @@ function renderCloset() {
 
   // types within the chosen category (only those in use)
   const used = state.filterCat === 'all' ? [] : [...new Set(state.items.filter((i) => i.cat === state.filterCat).map((i) => i.sub).filter(Boolean))];
-  const list = used.length ? [...new Set([...CATS[state.filterCat].subs.filter((s) => used.includes(s)), ...used])] : [];
+  const shown = state.filterCat === 'all' ? [] : typesFor(state.filterCat, state.filterSub);
+  const list = used.length ? [...new Set([...CATS[state.filterCat].subs.filter((s) => used.includes(s)), ...used])].filter((s) => shown.includes(s)) : [];
   const subs = h(`<div class="subchips ${list.length ? 'open' : ''}"><div class="chips"></div></div>`);
   list.forEach((s) => {
     const c = h(`<button class="chip small ${state.filterSub === s ? 'active' : ''}">${esc(s)}</button>`);
@@ -1082,8 +1099,7 @@ function bulkEdit(list) {
     const cat = ch.cat || same, f = $('[data-typef]', c), w = $('[data-subs]', c);
     f.hidden = !cat; w.innerHTML = '';
     if (!cat) return;
-    const custom = state.items.filter((i) => i.cat === cat && i.sub && !CATS[cat].subs.includes(i.sub)).map((i) => i.sub);
-    [...new Set([...CATS[cat].subs, ...custom])].forEach((sname) => {
+    typesFor(cat, ch.sub).forEach((sname) => {
       const b = h(`<button class="chip small ${ch.sub === sname ? 'active' : ''}" aria-pressed="${ch.sub === sname}">${esc(sname)}</button>`);
       press(b, { tap: () => { ch.sub = ch.sub === sname ? undefined : sname; paintSubs(); }, hapticTap: 'select' });
       w.append(b);
@@ -1095,11 +1111,11 @@ function bulkEdit(list) {
   press($('[data-a=apply]', c), { tap: async () => {
     for (const it of list) {
       if (!state.items.includes(it)) continue; // deleted while this sheet was open
-      const auto = it.name === autoName(it.colors, it.cat, it.sub); // a name the app made follows the new type
+      const auto = it.name === autoName(it.cat, it.sub, it.brand); // a name the app made follows the new type and brand
       if (ch.cat && ch.cat !== it.cat) { it.cat = ch.cat; it.sub = null; }
       if (ch.sub !== undefined) it.sub = ch.sub;
       if (ch.brand !== undefined) { if (ch.brand) it.brand = ch.brand; else delete it.brand; }
-      if (auto) it.name = autoName(it.colors, it.cat, it.sub);
+      if (auto) it.name = autoName(it.cat, it.sub, it.brand);
       await db.put('items', it);
     }
     haptic('success'); toast(`${list.length} item${list.length === 1 ? '' : 's'} saved`);
@@ -1108,7 +1124,88 @@ function bulkEdit(list) {
 }
 
 // what an item can be found by: its name, brand, type, category and colours
-const itemWords = (i) => [i.name, i.brand, i.sub, CATS[i.cat]?.label, ...mainColors(i).map(colorName)].filter(Boolean).join(' ').toLowerCase();
+const itemWords = (i) => [i.name, i.brand, i.sub, i.notes, CATS[i.cat]?.label, ...mainColors(i).map(colorName)].filter(Boolean).join(' ').toLowerCase();
+
+/* ---------- types: which types each category offers (More > Types), and the user's own ---------- */
+const TYPES_KEY = 'closet.types';
+const typePrefs = { hidden: {}, custom: {} }; // per category: built-in types switched off, and types the user added
+try { const t = JSON.parse(localStorage.getItem(TYPES_KEY) || '{}'); typePrefs.hidden = t.hidden || {}; typePrefs.custom = t.custom || {}; } catch { /* the defaults */ }
+const saveTypes = () => { try { localStorage.setItem(TYPES_KEY, JSON.stringify(typePrefs)); } catch { /* kept for this visit */ } };
+const isOwnType = (cat, t) => !CATS[cat].subs.includes(t);
+/** The types a category offers: built-in and own, without those switched off (`keep` always stays: the one in use). */
+function typesFor(cat, keep = null, all = false) {
+  const own = [...(typePrefs.custom[cat] || []), ...state.items.filter((i) => i.cat === cat && i.sub && isOwnType(cat, i.sub)).map((i) => i.sub)];
+  const list = [...new Set([...CATS[cat].subs, ...own])];
+  const off = new Set(typePrefs.hidden[cat] || []);
+  return all ? list : list.filter((t) => !off.has(t) || t === keep);
+}
+/** Adds an own type (or finds the one already there, whatever its capitals). Returns its name. */
+function addType(cat, typed) {
+  const t = (typed || '').trim();
+  if (!t) return null;
+  const have = typesFor(cat, null, true).find((x) => x.toLowerCase() === t.toLowerCase());
+  if (have) { typePrefs.hidden[cat] = (typePrefs.hidden[cat] || []).filter((x) => x !== have); saveTypes(); return have; }
+  typePrefs.custom[cat] = [...(typePrefs.custom[cat] || []), t];
+  saveTypes();
+  return t;
+}
+/** Deletes an own type: the items that had it keep their place, without a type. Returns true if it went. */
+async function deleteType(cat, t) {
+  const using = state.items.filter((i) => i.cat === cat && i.sub === t);
+  if (!(await confirmSheet(`Delete the type ${t}?`, using.length ? `${using.length} item${using.length === 1 ? '' : 's'} will have no type.` : '', 'Delete'))) return false;
+  typePrefs.custom[cat] = (typePrefs.custom[cat] || []).filter((x) => x !== t);
+  typePrefs.hidden[cat] = (typePrefs.hidden[cat] || []).filter((x) => x !== t);
+  saveTypes();
+  for (const it of using) {
+    const auto = it.name === autoName(it.cat, it.sub, it.brand);
+    it.sub = null;
+    if (auto) it.name = autoName(it.cat, null, it.brand);
+    await db.put('items', it);
+  }
+  if (state.filterSub === t) state.filterSub = null;
+  haptic('success'); toast('Type deleted');
+  render();
+  return true;
+}
+/** More > Types: tap a type to show or hide it; own types have a delete button; each category can take new ones. */
+function openTypes() {
+  const c = h(`<div class="types-ed"><h2>Types</h2><p class="sub">Choose the types each category offers when you add or edit an item. Your own types can be deleted.</p>
+    <div data-cats></div><button class="btn sage block" data-a="done">Done</button></div>`);
+  const s = sheet(c, { onClose: () => render() });
+  const draw = (focusSel = null) => {
+    const host = $('[data-cats]', c);
+    host.innerHTML = '';
+    CAT_ORDER.forEach((cat) => {
+      const off = new Set(typePrefs.hidden[cat] || []);
+      const sec = h(`<section class="ty-sec"><h3>${svg(cat)}<span>${CATS[cat].label}</span></h3><div class="wrap-chips"></div></section>`);
+      const w = $('.wrap-chips', sec);
+      typesFor(cat, null, true).forEach((t) => {
+        const own = isOwnType(cat, t), on = !off.has(t);
+        const chip = h(`<span class="ty-chip${on ? ' on' : ''}"><button class="ty-t" aria-pressed="${on}" data-t="${esc(cat + '|' + t)}">${svg('check')}<span>${esc(t)}</span></button>${own ? `<button class="ty-x" aria-label="Delete the type ${esc(t)}">${svg('close')}</button>` : ''}</span>`);
+        press($('.ty-t', chip), { tap: () => {
+          typePrefs.hidden[cat] = on ? [...off, t] : [...off].filter((x) => x !== t);
+          saveTypes(); draw(`[data-t="${CSS.escape(cat + '|' + t)}"]`);
+        }, hapticTap: 'select' });
+        if (own) press($('.ty-x', chip), { tap: async () => { if (await deleteType(cat, t)) draw(); } });
+        w.append(chip);
+      });
+      const add = h(`<button class="chip small add ty-add">${svg('plus')}<span>Add</span></button>`);
+      press(add, { tap: () => {
+        const inp = h(`<input class="input ty-in" placeholder="New type" maxlength="20" aria-label="New ${esc(CATS[cat].label.toLowerCase())} type" />`);
+        add.replaceWith(inp); inp.focus();
+        let done = false;
+        const finish = () => { if (done) return; done = true; const v = addType(cat, inp.value); if (v) haptic('success'); draw(); };
+        inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') finish(); if (e.key === 'Escape') { e.stopPropagation(); done = true; draw(); } });
+        inp.addEventListener('blur', finish);
+      } });
+      w.append(add);
+      host.append(sec);
+    });
+    if (focusSel) $(focusSel, c)?.focus({ preventScroll: true });
+  };
+  draw();
+  press($('[data-a=done]', c), { tap: () => s.close() });
+}
 
 /* ---------- brands: every brand used, plus ones added and not used yet (kept on this device) ---------- */
 const BRANDS_KEY = 'closet.brands';
@@ -1171,7 +1268,7 @@ function brandField(get, set, { keepOption = false } = {}) {
 const matches = (hay, q) => q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
 
 function itemMenu(it, anchor, e) {
-  contextMenu(anchor, it.name, [
+  contextMenu(anchor, null, [
     { icon: 'edit', label: 'Edit', run: () => openAdd({ item: it }) },
     { icon: 'look', label: 'Style a look', run: () => openEditor(null, suggestLook(it.id)) },
     { icon: 'heart', label: it.fav ? 'Remove favourite' : 'Favourite', run: async () => { await toggleFav(it, 'items'); render(); } },
@@ -1209,6 +1306,7 @@ function openDetail(it) {
       <button class="fav-btn ${it.fav ? 'on' : ''}" data-a="fav" aria-label="Favourite" aria-pressed="${!!it.fav}">${svg('heart')}</button></div>
     <h2>${esc(it.name)}</h2>
     <div class="detail-meta">${it.brand ? `<span class="brand">${esc(it.brand)}</span>` : ''}<span>${esc(it.sub || CATS[it.cat]?.label || '')}</span><span class="dots">${cols.map((x) => `<i style="background:${x}"></i>`).join('')}</span><span>${cols.map(colorName).join(', ')}</span></div>
+    ${it.notes ? `<p class="notes">${esc(it.notes)}</p>` : ''}
     <p class="worn" data-worn></p>
     ${inLooks.length ? `<div class="in-looks" role="group" aria-label="Looks with this item">${inLooks.slice(0, 8).map((o) => `<button data-look="${o.id}" aria-label="${esc(o.name)}"><img src="${o.thumb || ''}" alt="" /></button>`).join('')}</div>` : ''}
     <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="edit">Edit</button><button class="btn" data-a="look">Style</button></div>
@@ -1290,6 +1388,8 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
       <button class="chip" data-a="bg" role="switch" aria-checked="${!!cut.removeBg}"><span class="switch ${cut.removeBg ? 'on' : ''}" style="transform:scale(.7);margin:-6px -7px"></span>Remove background</button>
     </div>
     <div class="slider-row" data-a="tol-row"><span>Less</span><input type="range" min="${TOL_MIN}" max="${TOL_MAX}" value="${Math.min(TOL_MAX, Math.max(TOL_MIN, cut.tolerance))}" aria-label="How much background to remove" /><span>More</span></div>
+    <div class="slider-cap" data-a="smooth-cap">Smooth edges</div>
+    <div class="slider-row" data-a="smooth-row"><span>Off</span><input type="range" min="0" max="5" step="1" value="${Math.min(5, Math.max(0, cut.smooth || 0))}" aria-label="Smooth edges" data-smooth /><span>Max</span></div>
     <div class="cut-more" data-a="more-row">
       <button class="btn soft" data-a="erase" aria-pressed="false">${svg('eraser')}<span>Remove</span></button>
       <button class="btn soft" data-a="add" aria-pressed="false">${svg('brush')}<span>Add back</span></button>
@@ -1304,6 +1404,8 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
   function syncTools() {
     if (!cut.removeBg) mode = null;
     $('[data-a=tol-row]', el).style.display = cut.removeBg ? '' : 'none';
+    $('[data-a=smooth-row]', el).style.display = cut.removeBg ? '' : 'none';
+    $('[data-a=smooth-cap]', el).style.display = cut.removeBg ? '' : 'none';
     $('[data-a=more-row]', el).style.display = cut.removeBg ? '' : 'none';
     $('[data-a=undo]', el).style.display = cut.seeds.length ? '' : 'none';
     [[eraseBtn, 'erase', 'Remove'], [addBtn, 'add', 'Add back']].forEach(([b, m, label]) => {
@@ -1360,7 +1462,7 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     await pause(30); // let the spinner paint before the heavy work
     if (mine !== run) return; // a newer change superseded this one
     mask = computeMask(cut.raster, cut.tolerance, cut.seeds);
-    cut.result = renderSticker(cut.raster, mask, { removeBg: cut.removeBg });
+    cut.result = renderSticker(cut.raster, mask, { removeBg: cut.removeBg, smooth: cut.smooth || 0 });
     cut.guess = null;
     if (cut.removeBg) { try { cut.guess = guessCategory(mask, cut.raster.width, cut.raster.height); } catch { /* no guess */ } }
     stage.classList.remove('loading');
@@ -1392,6 +1494,24 @@ function mountCutout(host, cut, { onChange, extraTools = [] } = {}) {
     if (!cut.seeds.length && document.activeElement === $('[data-a=undo]', el)) eraseBtn.focus({ preventScroll: true }); // Undo is about to hide
     process();
   } });
+  // smoothing only redraws the sticker from the cut already made
+  async function restyle() {
+    if (!mask) { await process(); return; }
+    const mine = ++run;
+    stage.classList.add('loading');
+    await pause(30);
+    if (mine !== run) return;
+    cut.result = renderSticker(cut.raster, mask, { removeBg: cut.removeBg, smooth: cut.smooth || 0 });
+    stage.classList.remove('loading');
+    show();
+    onChange?.(cut);
+  }
+  const smoothIn = $('[data-smooth]', el);
+  smoothIn.addEventListener('input', () => {
+    cut.smooth = +smoothIn.value;
+    haptic('select');
+    clearTimeout(timer); timer = setTimeout(() => { timer = null; restyle(); }, 140);
+  });
   let lastTick = cut.tolerance;
   range.addEventListener('input', () => {
     cut.tolerance = +range.value;
@@ -1492,10 +1612,11 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
     kind, // where the photo came from, so "add another" opens the same place
     sub: item?.sub || (state.filterSub ?? null),
     // a name the app generated stays automatic, so it follows later category / type changes
-    name: item && item.name !== autoName(item.colors, item.cat, item.sub) ? item.name : '',
+    name: item && item.name !== autoName(item.cat, item.sub, item.brand) ? item.name : '',
+    notes: item?.notes || '',
+    smooth: item?.cut?.smooth || 0,
     price: item?.price ?? '',
     brand: item?.brand || '',
-    customSubs: [],
   };
 
   const c = h(`<div>
@@ -1505,7 +1626,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
   </div>`);
   const s = sheet(c);
   // swipe, scrim tap and Escape all ask first once there is a photo or a change to lose
-  const sig = () => JSON.stringify([st.original === (item?.original || null), st.cat, st.sub, st.name, st.price, st.brand, st.tolerance, st.removeBg, st.seeds]);
+  const sig = () => JSON.stringify([st.original === (item?.original || null), st.cat, st.sub, st.name, st.price, st.brand, st.notes, st.tolerance, st.removeBg, st.smooth, st.seeds]);
   const clean = sig();
   s.dismiss = async () => {
     if (sig() !== clean && !(await confirmSheet(item ? 'Discard changes?' : 'Discard this item?', '', 'Discard'))) return;
@@ -1590,18 +1711,20 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
     const open = !!item || !!state.moreOpen;
     const d = h(`<div>
       <div class="field"><label>Category</label><div class="seg">${CAT_ORDER.map((k) => `<button data-cat="${k}" class="${st.cat === k ? 'active' : ''}">${svg(k)}${CATS[k].label}</button>`).join('')}</div></div>
-      ${item ? '' : `<button class="more-toggle" data-a="more" aria-expanded="${open}"><span>Type, brand, name, price</span>${svg('chev')}</button>`}
+      ${item ? '' : `<button class="more-toggle" data-a="more" aria-expanded="${open}"><span>Type, brand, name, notes, price</span>${svg('chev')}</button>`}
       <div class="more ${open ? 'open' : ''}" data-more>
         <div class="field"><label>Type</label><div class="wrap-chips" data-subs></div></div>
         <div data-brand></div>
         <div class="field"><label>Name</label><input class="input" data-name placeholder="Name" value="${esc(st.name)}" maxlength="40" /></div>
+        <div class="field"><label>Notes</label><textarea class="input notes" data-notes rows="3" maxlength="500" placeholder="Size, fit, care, where it is from">${esc(st.notes)}</textarea></div>
         ${item ? '' : `<div class="field"><label>Price (optional)</label><div class="price-wrap"><span>$</span><input class="input" data-price inputmode="decimal" placeholder="0" value="" /></div></div>`}
       </div>
       <button class="btn sage block" data-a="save">${item ? 'Save' : 'Add to closet'}</button>
       ${item ? '' : '<button class="btn ghost block" data-a="next">Add and do another</button>'}
     </div>`);
     details.append(d);
-    $('[data-brand]', d).replaceWith(brandField(() => st.brand, (v) => { st.brand = v; }));
+    $('[data-brand]', d).replaceWith(brandField(() => st.brand, (v) => { st.brand = v; syncNameHint(); }));
+    const notes = $('[data-notes]', d); notes.addEventListener('input', () => { st.notes = notes.value; });
     $$('[data-cat]', d).forEach((b) => press(b, { tap: () => {
       st.cat = b.dataset.cat; st.sub = null; st.autoCat = false;
       $$('[data-cat]', d).forEach((x) => x.classList.toggle('active', x === b));
@@ -1636,20 +1759,27 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
     const wrap = $('[data-subs]', details);
     if (!wrap) return;
     wrap.innerHTML = '';
-    const custom = state.items.filter((i) => i.cat === st.cat && i.sub && !CATS[st.cat].subs.includes(i.sub)).map((i) => i.sub);
-    const list = [...new Set([...CATS[st.cat].subs, ...custom, ...st.customSubs])];
-    list.forEach((sname) => {
-      const b = h(`<button class="chip small ${st.sub === sname ? 'active' : ''}">${esc(sname)}</button>`);
-      press(b, { tap: () => { st.sub = st.sub === sname ? null : sname; st.autoCat = false; renderSubs(); }, hapticTap: 'select' });
+    typesFor(st.cat, st.sub).forEach((sname) => {
+      const b = h(`<button class="chip small ${st.sub === sname ? 'active' : ''}" aria-pressed="${st.sub === sname}">${esc(sname)}</button>`);
+      const cat = st.cat;
+      press(b, {
+        tap: () => { st.sub = st.sub === sname ? null : sname; st.autoCat = false; renderSubs(); },
+        // an own type can be deleted from here too
+        long: isOwnType(cat, sname) ? (e) => contextMenu(b, null, [{ icon: 'trash', label: `Delete the type ${sname}`, danger: true, run: async () => {
+          if (await deleteType(cat, sname)) { if (st.sub === sname) st.sub = null; renderSubs(); }
+        } }], e) : null,
+        hapticTap: 'select',
+      });
       wrap.append(b);
     });
-    const add = h('<button class="chip small add">Custom</button>');
+    const add = h(`<button class="chip small add">${svg('plus')}<span>Own type</span></button>`);
     press(add, { tap: () => {
-      const inp = h('<input class="input" style="height:34px;width:140px;font-size:14px" placeholder="Type" maxlength="20" />');
+      const inp = h('<input class="input" style="height:34px;width:140px;font-size:14px" placeholder="Type" maxlength="20" aria-label="Your own type" />');
       add.replaceWith(inp); inp.focus();
-      const done = () => { const v = inp.value.trim(); if (v) { st.customSubs.push(v); st.sub = v; } renderSubs(); };
-      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(); });
-      inp.addEventListener('blur', done);
+      let done = false;
+      const finish = () => { if (done) return; done = true; const v = addType(st.cat, inp.value); if (v) { st.sub = v; st.autoCat = false; } renderSubs(); };
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') finish(); });
+      inp.addEventListener('blur', finish);
     } });
     wrap.append(add);
     syncNameHint();
@@ -1658,7 +1788,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
   // the name box hints at the name the piece gets if it is left empty
   function syncNameHint() {
     const name = $('[data-name]', details);
-    if (name) name.placeholder = autoName(st.result?.colors, st.cat, st.sub);
+    if (name) name.placeholder = autoName(st.cat, st.sub, st.brand);
   }
 
   async function save() {
@@ -1669,7 +1799,8 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
       ...(item ? itemById(item.id) || item : {}), // favourite, wear log and anything else the form does not show
       id: item?.id || uid(),
       created: item?.created || Date.now(),
-      name: (st.name || '').trim() || autoName(colors, st.cat, st.sub),
+      name: (st.name || '').trim() || autoName(st.cat, st.sub, (st.brand || '').trim()),
+      notes: (st.notes || '').trim() || undefined,
       cat: st.cat, sub: st.sub,
       brand: (st.brand || '').trim() || undefined,
       price: item ? (item.price ?? null) : parsePrice(st.price), // editing never touches the price
@@ -1677,7 +1808,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
       stickerDark: st.result.darkURL || (item && st.result.dataURL === itemById(item.id)?.sticker ? itemById(item.id)?.stickerDark : null) || null,
       colors,
       original: st.original,
-      cut: { v: CUT_V, tolerance: st.tolerance, seeds: st.seeds, removeBg: st.removeBg },
+      cut: { v: CUT_V, tolerance: st.tolerance, seeds: st.seeds, removeBg: st.removeBg, smooth: st.smooth || 0 },
     };
     if (!rec.brand) delete rec.brand;
     await db.put('items', rec);
@@ -1815,7 +1946,7 @@ function openBatch(files, presetCat = null) {
     let raster;
     try { raster = rasterize(await loadImage(e.original), 900); } catch { tuning = false; toast('Photo could not be opened'); return; }
     if (e.status !== 'done' || saving) { tuning = false; return; }
-    const cut = { raster, tolerance: e.cut.tolerance, seeds: [...e.cut.seeds], removeBg: e.cut.removeBg, result: e.result };
+    const cut = { raster, tolerance: e.cut.tolerance, seeds: [...e.cut.seeds], removeBg: e.cut.removeBg, smooth: e.cut.smooth || 0, result: e.result };
     const cat0 = e.cat;
     let changed = false, ed = null;
     const t = h(`<div class="tuner"><h2>Fix cut-out</h2>
@@ -1828,12 +1959,12 @@ function openBatch(files, presetCat = null) {
       if (ed.pending()) {
         // the slider moved but its re-cut had not run yet: cut this photo again with the new settings
         ed.cancel();
-        e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg };
+        e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg, smooth: cut.smooth };
         e.status = 'wait'; paint(e); sync(); pump();
         return;
       }
       if (!changed) return;
-      e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg };
+      e.cut = { tolerance: cut.tolerance, seeds: cut.seeds, removeBg: cut.removeBg, smooth: cut.smooth };
       e.result = cut.result;
       if (e.auto && e.cat === cat0 && cut.guess) e.cat = cut.guess;
       paint(e); sync();
@@ -1846,7 +1977,7 @@ function openBatch(files, presetCat = null) {
       const tol = cut.tolerance, rb = cut.removeBg;
       changed = false; // everything, this photo included, is cut again below
       ed.cancel();
-      e.cut = { tolerance: tol, seeds: cut.seeds, removeBg: rb };
+      e.cut = { tolerance: tol, seeds: cut.seeds, removeBg: rb, smooth: cut.smooth };
       ts.close();
       live().forEach((x) => {
         x.cut.tolerance = tol; x.cut.removeBg = rb;
@@ -1878,9 +2009,9 @@ function openBatch(files, presetCat = null) {
       e,
       rec: {
         id: uid(), created: now + i,
-        name: autoName(e.result.colors, e.cat, null), cat: e.cat, sub: null, price: null,
+        name: autoName(e.cat, null), cat: e.cat, sub: null, price: null,
         sticker: e.result.dataURL, stickerDark: e.result.darkURL || null, colors: mainColors(e.result),
-        original: e.original, cut: { v: CUT_V, tolerance: e.cut.tolerance, seeds: e.cut.seeds, removeBg: e.cut.removeBg },
+        original: e.original, cut: { v: CUT_V, tolerance: e.cut.tolerance, seeds: e.cut.seeds, removeBg: e.cut.removeBg, smooth: e.cut.smooth || 0 },
       },
     }));
     let added = 0;
@@ -1945,7 +2076,7 @@ function openBatch(files, presetCat = null) {
           if (cancelled) return;
           if (e.status === 'gone') continue;
           const mask = computeMask(raster, e.cut.tolerance, e.cut.seeds);
-          e.result = renderSticker(raster, mask, { removeBg: e.cut.removeBg });
+          e.result = renderSticker(raster, mask, { removeBg: e.cut.removeBg, smooth: e.cut.smooth || 0 });
           // the category starts as what the shape looks like; a tap on the row changes it
           if (e.auto && e.cut.removeBg) { try { e.cat = guessCategory(mask, raster.width, raster.height) || e.cat; } catch { /* left to the person */ } }
           // "use for all" may have changed the strength while this one was being cut
@@ -1994,6 +2125,14 @@ const ONE = { top: 'Top', outer: 'Outerwear', bottom: 'Bottom', shoes: 'Shoes', 
 
 function renderMix(focusRow = null) {
   const root = $('#view-mix');
+  // nothing has changed since Mix was last drawn: keep it as it is (each row back where it was)
+  const stamp = JSON.stringify([state.items.map((i) => `${i.id}|${i.cat}|${i.name}|${(i.sticker || '').length}|${i.stickerDark ? 1 : 0}`).join(','), mix.rows.map((r) => r.cat).join(), isDark()]);
+  if (!focusRow && mix.stamp === stamp && mix.restore && root.firstChild) {
+    $('#mix-dock').hidden = state.view !== 'mix';
+    mix.restore();
+    return;
+  }
+  mix.stamp = stamp;
   let focusEl = null;
   root.innerHTML = '';
   if (!state.items.length) {
@@ -2030,14 +2169,15 @@ function renderMix(focusRow = null) {
     const K = Math.min(61, Math.max(3, 2 * Math.ceil(24 / L) + 1)), M = Math.floor(K / 2);
     const row = h(`<div class="mix-row"><div class="mix-track" role="listbox" tabindex="0" aria-label="${r.extra ? 'Another ' + ONE[r.cat].toLowerCase() : CATS[r.cat].label}"></div></div>`);
     const track = $('.mix-track', row);
-    const frag = document.createDocumentFragment();
+    // the whole row in one go; pictures go in only near the middle (see paint), so even a big closet opens at once
+    let html = '';
     for (let k = 0; k < K; k++) slots.forEach((it, si) => {
       const j = k * L + si, copy = k !== M ? ' aria-hidden="true"' : ''; // a screen reader hears each item once
-      frag.append(it
-        ? h(`<button class="mix-item" role="option" tabindex="-1" id="mix-${ri}-${j}"${copy} aria-label="${esc(it.name)}"><img src="${stickerOf(it)}" data-st="${it.id}" alt="" draggable="false" /></button>`)
-        : h(`<button class="mix-item none" role="option" tabindex="-1" id="mix-${ri}-${j}"${copy} aria-label="None"><span></span></button>`));
+      html += it
+        ? `<button class="mix-item" role="option" tabindex="-1" id="mix-${ri}-${j}"${copy} aria-label="${esc(it.name)}"><img alt="" draggable="false" decoding="async" /></button>`
+        : `<button class="mix-item none" role="option" tabindex="-1" id="mix-${ri}-${j}"${copy} aria-label="None"><span></span></button>`;
     });
-    track.append(frag);
+    track.innerHTML = html;
     const els = [...track.children];
     const at = (j) => slots[((j % L) + L) % L];
     const step = () => (els.length > 1 ? els[1].offsetLeft - els[0].offsetLeft : 1);
@@ -2062,6 +2202,11 @@ function renderMix(focusRow = null) {
         els[i].style.opacity = (0.28 + 0.72 * t).toFixed(3);
       }
       painted = [lo, hi];
+      // pictures for the items in view and a few either side
+      for (let i = Math.max(0, lo - 3); i <= Math.min(els.length - 1, hi + 3); i++) {
+        const it = at(i), im = it && els[i].firstChild;
+        if (im && !im.getAttribute('src')) { im.dataset.st = it.id; im.src = stickerOf(it); }
+      }
       const now = Math.max(0, Math.min(els.length - 1, Math.round(pos)));
       if (want >= 0) { if (now !== want) return; want = -1; } // a row on its way to an item keeps that item chosen
       if (now === cur) return;
@@ -2123,6 +2268,7 @@ function renderMix(focusRow = null) {
   dock.hidden = state.view !== 'mix';
   root.append(wrap);
   starts.forEach((f) => f());
+  mix.restore = () => starts.forEach((f) => f());
   save.classList.toggle('off', !chosen().length);
   if (focusRow) (focusEl || $('[data-a=rows]', actions)).focus({ preventScroll: true });
 
@@ -2355,7 +2501,7 @@ function renderOutfits() {
 }
 
 function lookMenu(o, card, e) {
-  contextMenu(card, o.name, [
+  contextMenu(card, null, [
     { icon: 'edit', label: 'Open', run: () => openEditor(o) },
     { icon: 'heart', label: o.fav ? 'Remove favourite' : 'Favourite', run: async () => { await toggleFav(o, 'outfits'); renderOutfits(); } },
     { icon: 'share', label: 'Share', run: () => shareLook(o) },
@@ -3163,6 +3309,7 @@ function settingsPanel() {
       <div class="set-row opt"><span id="set-motion">Reduce motion</span><button class="switch" role="switch" data-a="motion" aria-labelledby="set-motion"></button></div>
     </div>
     <div class="set-card">
+      <button class="set-link" data-a="types">${svg('tag')}<span>Types<small>Choose the types each category offers</small></span>${svg('chev', 'class="go"')}</button>
       <button class="set-link" data-a="mixrows">${svg('layers')}<span>Mix rows<small>${mix.rows.map((r) => esc(CATS[r.cat].label)).join(' · ')}</small></span>${svg('chev', 'class="go"')}</button>
     </div>
     <div class="set-card">
@@ -3182,12 +3329,14 @@ function settingsPanel() {
   press($('[data-a=motion]', c), { tap: () => { prefs.reduce = !prefs.reduce; applyPrefs(); sync(); refocus('[data-a=motion]'); }, hapticTap: 'select' });
   sync();
   press($('[data-a=mixrows]', c), { tap: () => openMixRows() });
+  press($('[data-a=types]', c), { tap: () => openTypes() });
   press($('[data-a=exp]', c), { tap: exportData });
   press($('[data-a=imp]', c), { tap: () => { const f = $('#file-import'); f.value = ''; f.onchange = () => f.files[0] && importData(f.files[0]); f.click(); } });
   press($('[data-a=wipe]', c), { tap: async () => {
     if (!(await confirmSheet('Clear everything?', 'All items and looks will be deleted.', 'Clear'))) return;
     await db.clear('items'); await db.clear('outfits');
-    try { localStorage.removeItem(BRANDS_KEY); } catch { /* nothing kept */ }
+    try { localStorage.removeItem(BRANDS_KEY); localStorage.removeItem(TYPES_KEY); } catch { /* nothing kept */ }
+    typePrefs.hidden = {}; typePrefs.custom = {};
     state.items = []; state.outfits = []; resetMix(); imgCache.clear(); resetClosetFilters(); render(); toast('Cleared');
   } });
   return c;
@@ -3264,6 +3413,13 @@ async function load() {
   const [items, outfits] = await Promise.all([db.all('items'), db.all('outfits')]);
   state.items = items || [];
   state.outfits = outfits || [];
+  // names the app made from a colour (often wrong) become plain ones: the brand and type, or the kind
+  let renamed = false;
+  try { renamed = localStorage.getItem('closet.names2') === '1'; } catch { /* renamed again next time, harmlessly */ }
+  if (!renamed) {
+    for (const it of state.items) if (it.name === oldAutoName(it.colors, it.cat, it.sub)) { it.name = autoName(it.cat, it.sub, it.brand); db.put('items', it).catch(() => {}); }
+    try { localStorage.setItem('closet.names2', '1'); } catch { /* as above */ }
+  }
   // "In the wash" is no more: old marks go
   for (const it of state.items) if (it.wash) { delete it.wash; db.put('items', it).catch(() => {}); }
   // Outerwear arrived after some jackets and coats were filed under Tops: move those once
@@ -3361,13 +3517,13 @@ function openCreate() {
   const c = h(`<div class="create"><h2>Create</h2>
     <h3 class="cr-h">Add clothes</h3>
     <div class="cr-grid">
-      <button class="cr-tile t1" data-a="camera">${svg('camera')}<b>Take a photo</b><small>One item, straight from the camera</small></button>
-      <button class="cr-tile t2" data-a="library">${svg('image')}<b>Choose photos</b><small>One, or many at once</small></button>
+      <button class="cr-tile t1" data-a="camera">${svg('camera')}<b>Take photo</b></button>
+      <button class="cr-tile t2" data-a="library">${svg('image')}<b>Choose photos</b></button>
     </div>
     <h3 class="cr-h">Make a look</h3>
     <div class="cr-grid">
-      <button class="cr-tile t3" data-a="look">${svg('look')}<b>New look</b><small>Start on a blank board</small></button>
-      <button class="cr-tile t4${none ? ' off' : ''}" data-a="surprise">${svg('sparkle')}<b>Surprise me</b><small>${none ? 'Add some clothes first' : 'A look put together for you'}</small></button>
+      <button class="cr-tile t3" data-a="look">${svg('look')}<b>New look</b></button>
+      <button class="cr-tile t4${none ? ' off' : ''}" data-a="surprise">${svg('sparkle')}<b>Surprise me</b></button>
     </div>
   </div>`);
   const s = sheet(c);
