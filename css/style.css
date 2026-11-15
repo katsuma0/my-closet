@@ -809,8 +809,7 @@ html.reduce-motion *, html.reduce-motion *::before, html.reduce-motion *::after 
 .cr-tile { justify-content: flex-end; }
 .cr-tile b { font-size: calc(25px * var(--ts)); }
 
-/* ---------- Smooth edges, and notes ---------- */
-.slider-cap { margin: -6px 2px 6px; font-size: calc(12.5px * var(--ts)); color: var(--ink-2); }
+/* ---------- notes ---------- */
 textarea.input.notes { height: auto; min-height: 84px; padding-top: 12px; padding-bottom: 12px; resize: vertical; line-height: 1.4; font: inherit; font-size: calc(16px * var(--ts)); }
 .notes { white-space: pre-wrap; margin: -4px 0 14px; color: var(--ink-2); font-size: calc(14.5px * var(--ts)); line-height: 1.45; }
 .chip.add svg { width: 14px; height: 14px; margin-right: 2px; }
@@ -828,3 +827,25 @@ textarea.input.notes { height: auto; min-height: 84px; padding-top: 12px; paddin
 .ty-x svg { width: 13px; height: 13px; }
 .ty-in { height: 36px; width: 140px; font-size: 14px; }
 .ty-add { height: 36px; }
+
+/* ---------- the page under a sheet or a menu stays put ---------- */
+html.locked, html.locked body { overflow: hidden; overscroll-behavior: none; }
+
+/* ---------- a heart on a closet card only for a favourite ---------- */
+.piece .heart { color: var(--sage-deep); }
+.piece .heart.gone { opacity: 0; transform: scale(.6); transition: opacity .25s var(--ease), transform .25s var(--ease); }
+
+/* ---------- Types: Select ---------- */
+.ty-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ty-head h2 { margin-bottom: 18px; }
+.ty-head .text-btn { margin-top: -12px; }
+.types-ed.choosing .ty-chip { background: var(--soft); color: var(--ink); box-shadow: inset 0 0 0 1.5px transparent; }
+.types-ed.choosing .ty-chip:not(.on) { color: var(--ink-3); }
+.types-ed.choosing .ty-chip .ty-t svg { display: none; }
+.types-ed.choosing .ty-chip.picked { background: color-mix(in srgb, var(--sage) 26%, var(--soft)); box-shadow: inset 0 0 0 1.5px var(--sage-deep); }
+.types-ed.choosing .ty-chip.picked .ty-t svg { display: block; color: var(--sage-deep); }
+.ty-bar { position: sticky; bottom: 0; display: flex; gap: 8px; padding: 12px 0 4px; background: linear-gradient(to top, var(--bg) 70%, transparent); }
+.ty-bar .btn { flex: 1; gap: 6px; height: 50px; }
+.ty-bar .btn svg { width: 17px; height: 17px; }
+.ty-bar .btn.off { opacity: .45; }
+.types-ed .row-btns { margin-top: 6px; }
