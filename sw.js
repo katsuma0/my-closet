@@ -1,5 +1,5 @@
 // Offline cache: app shell is cached, network-first so updates arrive quickly.
-const CACHE = 'my-closet-v3';
+const CACHE = 'my-closet-v4';
 const SHELL = ['./', 'index.html', 'css/style.css', 'js/app.js', 'js/db.js', 'js/cutout.js', 'js/edge.js', 'js/color.js', 'js/haptics.js', 'manifest.webmanifest', 'icons/icon.svg', 'css/fonts/cormorant-garamond-latin-500-normal.woff2', 'css/fonts/cormorant-garamond-latin-500-italic.woff2'];
 
 self.addEventListener('install', (e) => {

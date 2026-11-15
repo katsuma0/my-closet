@@ -159,6 +159,9 @@ final class AppViewController: UIViewController, UITabBarDelegate, WKScriptMessa
         // The items share the bar's width equally, so the middle one is at the bar's centre. The size was
         // chosen without a device: check it sits well inside the iOS 26 glass capsule.
         let plusSize = glass ? CGSize(width: 50, height: 50) : CGSize(width: 56, height: 48)
+        // The iOS 26 glass capsule sits a little lower than the middle of the bar's safe area (measured on an
+        // iPhone screenshot: about 6 points), so the + is moved down by that much to sit level in it.
+        let plusDrop: CGFloat = glass ? 6 : 0
 
         NSLayoutConstraint.activate([
             chrome.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -184,7 +187,7 @@ final class AppViewController: UIViewController, UITabBarDelegate, WKScriptMessa
 
             plusButton.centerXAnchor.constraint(equalTo: tabBar.centerXAnchor),
             // Centred on the part of the bar above the home indicator, where the tabs are.
-            plusButton.centerYAnchor.constraint(equalTo: tabBar.safeAreaLayoutGuide.centerYAnchor),
+            plusButton.centerYAnchor.constraint(equalTo: tabBar.safeAreaLayoutGuide.centerYAnchor, constant: plusDrop),
             plusButton.widthAnchor.constraint(equalToConstant: plusSize.width),
             plusButton.heightAnchor.constraint(equalToConstant: plusSize.height),
         ])

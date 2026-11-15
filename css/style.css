@@ -87,6 +87,7 @@
 /* figures that read as numbers (0 and 1, not o and I); !important because the font shorthand resets it */
 *, *::before, *::after { font-variant-numeric: lining-nums !important; }
 html, body { margin: 0; height: 100%; }
+html { background: var(--bg); }
 body {
   background: var(--bg);
   color: var(--ink);
@@ -208,7 +209,7 @@ main { padding: 4px 18px calc(130px + var(--safe-b)); }
   filter: drop-shadow(0 6px 10px rgba(70, 58, 44, .08));
   transition: transform .6s var(--spring), opacity .3s var(--ease);
 }
-.piece-open:hover .sticker { transform: rotate(-1.5deg) scale(1.03); }
+@media (hover: hover) and (pointer: fine) { .piece-open:hover .sticker { transform: scale(1.03); } }
 .piece .meta, .look .meta { display: flex; flex-direction: column; gap: 6px; margin: 10px 6px 0; }
 .piece .name, .look .name { min-width: 0; font: 500 calc(14px * var(--ts))/1.3 var(--sans); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dots { display: flex; gap: 4px; flex: none; }
@@ -634,9 +635,6 @@ body.choosing #tabbar { transform: translate(-50%, 160%); opacity: 0; pointer-ev
 .brand-new .input { flex: 1; min-width: 0; }
 .brand-new .btn { flex: none; padding: 0 18px; }
 .detail-meta .brand { font-weight: 600; color: var(--ink); }
-/* ---------- the closet sways a little while it scrolls ---------- */
-.piece .sticker { transform: rotate(calc(var(--sway, 0deg) * var(--d, 1))); }
-.piece-open:hover .sticker { transform: rotate(calc(-1.5deg + var(--sway, 0deg) * var(--d, 1))) scale(1.03); }
 
 /* Arrange: each item hops as it moves to its new place */
 .bitem.hop img { animation: hop .75s cubic-bezier(.3,1.45,.5,1) both; }
@@ -830,6 +828,8 @@ textarea.input.notes { height: auto; min-height: 84px; padding-top: 12px; paddin
 
 /* ---------- the page under a sheet or a menu stays put ---------- */
 html.locked, html.locked body { overflow: hidden; overscroll-behavior: none; }
+html.locked body { height: auto; min-height: 100%; }
+.scrim, .ctx, .ctx-preview { touch-action: none; overscroll-behavior: none; }
 
 /* ---------- a heart on a closet card only for a favourite ---------- */
 .piece .heart { color: var(--sage-deep); }
@@ -849,3 +849,26 @@ html.locked, html.locked body { overflow: hidden; overscroll-behavior: none; }
 .ty-bar .btn svg { width: 17px; height: 17px; }
 .ty-bar .btn.off { opacity: .45; }
 .types-ed .row-btns { margin-top: 6px; }
+
+/* ---------- look pictures fade in once drawn for the light or dark in use ---------- */
+.look .thumb, .in-looks img, .st-look img { transition: opacity .35s var(--ease); }
+.look .thumb.coming, .in-looks img.coming, .st-look img.coming { opacity: 0; }
+.look .thumb-wrap { transition: background-color .35s var(--ease); }
+/* a heart on a look card only for a favourite */
+.look .heart { color: var(--sage-deep); }
+.look .heart.gone { opacity: 0; transform: scale(.6); transition: opacity .25s var(--ease), transform .25s var(--ease); }
+
+/* ---------- thrifted ---------- */
+.set-row.thrift-row { padding: 6px 2px 4px; margin: -4px 0 14px; }
+.set-row.thrift-row > span { display: inline-flex; align-items: center; gap: 10px; }
+.set-row.thrift-row > span svg { width: 19px; height: 19px; color: var(--ink-2); }
+.detail-meta .thrift { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px 3px 7px; border-radius: 999px; background: color-mix(in srgb, var(--sage) 22%, transparent); color: var(--sage-deep); font-size: calc(12.5px * var(--ts)); font-weight: 500; }
+.detail-meta .thrift svg { width: 13px; height: 13px; }
+.detail-meta { flex-wrap: wrap; row-gap: 8px; }
+
+/* ---------- About and privacy ---------- */
+.about-foot { text-align: center; color: var(--ink-3); font-size: calc(12.5px * var(--ts)); margin: 18px 0 6px; }
+.privacy-doc h3 { font-size: calc(15px * var(--ts)); font-weight: 600; margin: 18px 0 6px; }
+.privacy-doc p, .privacy-doc li { color: var(--ink-2); font-size: calc(14.5px * var(--ts)); line-height: 1.5; margin: 0 0 8px; }
+.privacy-doc ul { padding-left: 20px; margin: 0 0 8px; }
+.privacy-doc .when { color: var(--ink-3); font-size: calc(12.5px * var(--ts)); margin: -12px 0 14px; }
