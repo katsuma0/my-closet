@@ -434,11 +434,11 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
 .looks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 12px; }
 @media (min-width: 560px) { .looks { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .look { position: relative; display: block; min-width: 0; text-align: left; animation: pieceIn .6s var(--ease) both; container-type: inline-size; }
-.look .heart { top: 6px; right: 6px; width: 36px; height: 36px; background: var(--card); }
+/* on a look the heart sits straight on the board, with only a faint shadow to lift it off any board colour */
+.look .heart { top: 4px; right: 4px; width: 40px; height: 40px; filter: drop-shadow(0 1px 1.5px rgba(30, 24, 18, .18)); }
 .look .thumb-wrap { position: relative; display: block; border-radius: var(--r); overflow: hidden; }
-/* on a look the heart sits on the look's own board colour, so it brings its own backing */
 
-.look .thumb { display: block; width: 100%; aspect-ratio: 4 / 5; object-fit: contain; }
+.look .thumb { display: block; width: 100%; aspect-ratio: 2 / 3; object-fit: contain; }
 .look.new { aspect-ratio: 4 / 5; align-self: start; display: grid; place-items: center; text-align: center; border-radius: var(--r); border: 1.5px dashed var(--ink-3); color: var(--ink-2); }
 .look.new .plus { width: 50px; height: 50px; margin: 0 auto 10px; border-radius: 50%; display: grid; place-items: center; background: var(--soft); }
 .look.new span { font: italic 500 calc(20px * var(--ts)) var(--serif); }
@@ -518,7 +518,7 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
 .worn { margin: -12px 0 18px; font-size: calc(13px * var(--ts)); color: var(--ink-2); }
 .in-looks { display: flex; gap: 8px; overflow-x: auto; margin: 0 0 18px; scrollbar-width: none; }
 .in-looks::-webkit-scrollbar { display: none; }
-.in-looks button { flex: none; width: 54px; height: 68px; border-radius: 12px; overflow: hidden; background: var(--card); }
+.in-looks button { flex: none; width: 54px; height: 81px; border-radius: 12px; overflow: hidden; background: var(--card); }
 .in-looks img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .detail-img img { max-width: 74%; max-height: 40vh; animation: stickerIn .7s var(--spring); filter: drop-shadow(0 12px 20px rgba(70, 58, 44, .12)); }
 .detail-meta { display: flex; align-items: center; gap: 10px; color: var(--ink-2); margin: -10px 0 22px; }
@@ -545,7 +545,7 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; bord
 .st-tile img { position: absolute; inset: 12px; width: calc(100% - 24px); height: calc(100% - 24px); object-fit: contain; }
 .st-n { font: 500 calc(17px * var(--ts)) var(--serif); }
 .st-look { display: flex; align-items: center; gap: 14px; width: 100%; padding: 8px; border-radius: 18px; background: var(--card); text-align: left; }
-.st-look .thumb-wrap { width: 62px; aspect-ratio: 4 / 5; flex: none; border-radius: 12px; overflow: hidden; display: block; }
+.st-look .thumb-wrap { width: 62px; aspect-ratio: 2 / 3; flex: none; border-radius: 12px; overflow: hidden; display: block; }
 .st-look img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .st-look b { display: block; font-weight: 500; }
 .st-look small { color: var(--ink-2); }

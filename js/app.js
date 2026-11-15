@@ -3255,12 +3255,12 @@ async function drawLook(o, { W, H }, width) {
 }
 
 /*
- * A look's picture for its card (and the other small places a look shows): the card's 4:5, on the board colour
- * for the light or dark in use, and every item whole. An item that hangs over the board's edge in the editor is
- * cut there; here the whole look is fitted in instead, so no straight cut edge shows. Made once per visit, one at
- * a time, so a long list of looks never holds the page up.
+ * A look's picture for its card (and the other small places a look shows): the card's shape, on the board colour
+ * for the light or dark in use, zoomed in on the items so they fill it (the board itself has no edge to show),
+ * and every item whole: one that hangs over the board's edge in the editor is cut there, never here. Made once
+ * per visit, one at a time, so a long list of looks never holds the page up.
  */
-const CARD_W = 480, CARD_H = 600;
+const CARD_W = 480, CARD_H = 720; // 2:3, a little taller than the closet's 4:5 tiles, as looks are tall
 async function drawCard(o, dark = isDark()) {
   const board = boardFor(o, dark);
   const { H } = await lookSize(o);
@@ -3269,20 +3269,21 @@ async function drawCard(o, dark = isDark()) {
     const it = itemById(p.itemId); if (!it) continue;
     try { shown.push({ p, img: await getImg(it, edgeOn(o, it, board)) }); } catch { /* a picture that cannot load is left out */ }
   }
-  // what the look covers, in board widths: the board itself, and every item as turned, with a little air around those that hang over
-  let x0 = 0, x1 = 1, y0 = 0, y1 = H;
-  const air = 0.03;
+  // what the items cover, in board widths, each as turned (an empty look shows its board)
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const { p, img } of shown) {
     const w = p.w, hh = w * (img.naturalHeight / img.naturalWidth || 1), a = (p.rot || 0) * Math.PI / 180;
     const c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
     const ex = (c * w + s * hh) / 2, ey = (s * w + c * hh) / 2, cy = p.y * H;
-    if (p.x - ex < x0) x0 = p.x - ex - air;
-    if (p.x + ex > x1) x1 = p.x + ex + air;
-    if (cy - ey < y0) y0 = cy - ey - air;
-    if (cy + ey > y1) y1 = cy + ey + air;
+    x0 = Math.min(x0, p.x - ex); x1 = Math.max(x1, p.x + ex); y0 = Math.min(y0, cy - ey); y1 = Math.max(y1, cy + ey);
   }
-  const k = Math.min(CARD_W / (x1 - x0), CARD_H / (y1 - y0));
-  const ox = (CARD_W - (x1 - x0) * k) / 2 - x0 * k, oy = (CARD_H - (y1 - y0) * k) / 2 - y0 * k;
+  if (!shown.length) { x0 = 0; x1 = 1; y0 = 0; y1 = H; }
+  // they fill the card, with a margin all round; a look of one or two small items is not blown up past
+  // about twice the size it has on the board
+  const margin = Math.min(CARD_W, CARD_H) * 0.07;
+  const fit = Math.min(CARD_W / 1, CARD_H / H);
+  const k = Math.min((CARD_W - 2 * margin) / Math.max(1e-3, x1 - x0), (CARD_H - 2 * margin) / Math.max(1e-3, y1 - y0), fit * 2.2);
+  const ox = CARD_W / 2 - (x0 + x1) / 2 * k, oy = CARD_H / 2 - (y0 + y1) / 2 * k;
   const cv = document.createElement('canvas'); cv.width = CARD_W; cv.height = CARD_H;
   const ctx = cv.getContext('2d');
   ctx.fillStyle = board; ctx.fillRect(0, 0, CARD_W, CARD_H);
