@@ -16,8 +16,15 @@ const CATS = {
 const CAT_ORDER = ['top', 'outer', 'bottom', 'shoes', 'acc'];
 // pieces typed as these were tops before Outerwear existed
 const OUTER_SUBS = new Set(['Jackets', 'Coats']);
-const BOARD = [['Linen', '#fdfcfa'], ['Sand', '#efe9df'], ['Sage', '#e9ede3'], ['Blush', '#f3e9e4'], ['Fog', '#e6ebee'], ['Night', '#2f2b27']];
+// board colours, each with the version shown in dark (the papers turn dark, Night turns deeper)
+const BOARD = [['Linen', '#fdfcfa', '#292623'], ['Sand', '#efe9df', '#353029'], ['Sage', '#e9ede3', '#2b3128'], ['Blush', '#f3e9e4', '#372c29'], ['Fog', '#e6ebee', '#283035'], ['Night', '#2f2b27', '#141210']];
 const BOARD_COLORS = BOARD.map((b) => b[1]);
+/** A board colour for light or dark: either version of a board colour gives the version wanted; any other colour stays. */
+function themedBoard(hex, dark = isDark()) {
+  const k = String(hex || '').toLowerCase();
+  const row = BOARD.find((b) => b[1] === k || b[2] === k);
+  return row ? row[dark ? 2 : 1] : hex;
+}
 
 const ICON = {
   top: '<path d="M8 4 3.5 6.5l1.8 3.6L7.5 9v11h9V9l2.2 1.1 1.8-3.6L16 4c-.6 1.4-2.2 2.3-4 2.3S8.6 5.4 8 4z"/>',
@@ -47,6 +54,8 @@ const ICON = {
   minus: '<path d="M6 12h12"/>',
   select: '<circle cx="12" cy="12" r="8"/><path d="m8.5 12.2 2.4 2.4 4.6-4.8"/>',
   tag: '<path d="M4 12.5V5h7.5l8 8-7.5 7.5zM8 9h.01"/>',
+  shield: '<path d="M12 3.5 5 6v5.5c0 4.3 2.9 7.7 7 9 4.1-1.3 7-4.7 7-9V6z"/><path d="m9 12 2.2 2.2L15.5 10"/>',
+  thrift: '<path d="M19.5 12a7.5 7.5 0 0 1-13.2 4.9M4.5 12a7.5 7.5 0 0 1 13.2-4.9"/><path d="M18 3.6v3.6h-3.6M6 20.4v-3.6h3.6"/>',
   filter: '<path d="M4 7h16M7 12h10M10 17h4"/>',
   chev: '<path d="m6 9 6 6 6-6"/>',
   drop: '<path d="M12 3.5c3 3.6 5.5 6.6 5.5 10a5.5 5.5 0 0 1-11 0c0-3.4 2.5-6.4 5.5-10z"/>',
@@ -75,6 +84,8 @@ const state = {
 
 /* Appearance choices. Kept in localStorage so index.html can apply them before first paint. */
 const PREFS_KEY = 'closet.prefs';
+// the version people see in More; the iOS app's MARKETING_VERSION says the same
+const APP_VERSION = '1.0';
 // tint: each item's card (and each new look's board) takes a soft colour from it, always; reduce: Reduce motion
 const prefs = { theme: 'system', tint: true, reduce: false };
 try {
@@ -403,7 +414,10 @@ function tileTint(it, dark = isDark()) {
 /** A look the user named (anything but the default "Untitled") is kept even with nothing on it. */
 const named = (o) => !!(o?.name || '').trim() && (o.name || '').trim() !== 'Untitled';
 /** Which outline a piece wears on a look: tinted to the piece when the look's background is automatic, else white or soft dark. */
-const edgeOf = (o, it) => (o.auto ? edgeFor(it, o.board) : darkBoard(o.board));
+const edgeOn = (o, it, board) => (o.auto ? edgeFor(it, board) : darkBoard(board));
+const edgeOf = (o, it) => edgeOn(o, it, o.board);
+/** The board a look shows now: it follows light and dark, as the closet's tiles do (an automatic one, and a chosen colour's two versions). */
+const boardFor = (o, dark = isDark()) => (o.auto ? autoBoard(o, dark) : themedBoard(o.board || BOARD_COLORS[0], dark));
 // keep digits and a single decimal separator (comma typed on some keyboards becomes a dot)
 const cleanPrice = (v) => {
   const t = String(v).replace(/,/g, '.').replace(/[^0-9.]/g, '');
@@ -591,19 +605,23 @@ function postChrome() {
 }
 // While a sheet or a menu is open the page under it does not scroll (a short sheet, or a drag past the end of a
 // long one, would otherwise move it): the page is pinned where it was and put back exactly there afterwards.
-let lockY = null, scrollQuietUntil = 0;
+let lockY = null;
 function lockScroll(on) {
   const b = document.body;
+  const head = $('#app > .top');
   if (on && lockY === null) {
     lockY = window.scrollY;
+    const was = head?.getBoundingClientRect().top;
     Object.assign(b.style, { position: 'fixed', top: `-${lockY}px`, left: '0', right: '0' });
     document.documentElement.classList.add('locked');
+    // the header stuck at the top would leave with the pinned page: it is held where it was
+    if (head) { const now = head.getBoundingClientRect().top; if (Math.abs(was - now) > 0.5) head.style.translate = `0 ${was - now}px`; }
   } else if (!on && lockY !== null) {
     const y = lockY;
     lockY = null;
+    if (head) head.style.translate = '';
     Object.assign(b.style, { position: '', top: '', left: '', right: '' });
     document.documentElement.classList.remove('locked');
-    scrollQuietUntil = performance.now() + 150; // the jump back is not a scroll to react to
     window.scrollTo({ top: y, behavior: 'instant' });
   }
 }
@@ -903,7 +921,7 @@ function renderCloset() {
     }
     const grid = h('<div class="grid"></div>');
     items.forEach((it, idx) => {
-      const card = h(`<div class="piece" data-id="${it.id}" style="animation-delay:${Math.min(idx, 12) * 35}ms;--d:${[1, -0.8, 0.6, -1.1, 0.9, -0.7][idx % 6]}">
+      const card = h(`<div class="piece" data-id="${it.id}" style="animation-delay:${Math.min(idx, 12) * 35}ms">
         <button class="piece-open"><span class="tile"${prefs.tint ? ` style="background:${tileTint(it)}"` : ''}><img class="sticker" src="${stickerOf(it)}" data-st="${it.id}" alt="" loading="lazy" /></span>
         <span class="meta"><span class="name">${esc(it.name)}</span><span class="dots">${mainColors(it).map((c) => `<i style="background:${c}"></i>`).join('')}</span></span></button>
         ${it.fav ? heartBtn(it) : ''}</div>`);
@@ -1097,6 +1115,7 @@ function selectBar() {
     bar = h(`<div class="select-bar glass" id="select-bar" role="toolbar" aria-label="Chosen items">
       <button data-a="s-edit">${svg('edit')}<span>Edit</span></button>
       <button data-a="s-fav">${svg('heart')}<span>Favourite</span></button>
+      <button data-a="s-thrift">${svg('thrift')}<span>Thrifted</span></button>
       <button data-a="s-del" class="danger">${svg('trash')}<span>Delete</span></button>
     </div>`);
     $('#app').append(bar); // inside #app: unreachable while a sheet or menu is open, like the rest of the page
@@ -1107,6 +1126,12 @@ function selectBar() {
       const on = !list.every((i) => i.fav);
       for (const it of list) { it.fav = on; await db.put('items', it); }
       haptic('success'); toast(on ? `${list.length} favourite${list.length === 1 ? '' : 's'}` : 'Favourites removed'); renderCloset();
+    }) });
+    press($('[data-a=s-thrift]', bar), { tap: need(async (list) => {
+      // all of them thrifted already: the mark comes off; otherwise every one gets it
+      const on = !list.every((i) => i.thrifted);
+      for (const it of list) { if (on) it.thrifted = true; else delete it.thrifted; await db.put('items', it); }
+      haptic('success'); toast(on ? `${list.length} marked thrifted` : 'Thrifted mark removed'); renderCloset();
     }) });
     press($('[data-a=s-del]', bar), { tap: need(async (list) => {
       // say which looks are touched, and which go altogether, as deleting one item does
@@ -1168,7 +1193,7 @@ function bulkEdit(list) {
 }
 
 // what an item can be found by: its name, brand, type, category and colours
-const itemWords = (i) => [i.name, i.brand, i.sub, i.notes, CATS[i.cat]?.label, ...mainColors(i).map(colorName)].filter(Boolean).join(' ').toLowerCase();
+const itemWords = (i) => [i.name, i.brand, i.sub, i.notes, CATS[i.cat]?.label, i.thrifted && 'thrifted thrift second hand', ...mainColors(i).map(colorName)].filter(Boolean).join(' ').toLowerCase();
 
 /* ---------- types: which types each category offers (More > Types), and the user's own ---------- */
 const TYPES_KEY = 'closet.types';
@@ -1399,10 +1424,10 @@ function openDetail(it) {
     <div class="detail-img${prefs.tint ? ' tinted' : ''}"${prefs.tint ? ` style="background:${tileTint(it)}"` : ''}><img src="${stickerOf(it)}" data-st="${it.id}" alt="" data-tint />
       <button class="fav-btn ${it.fav ? 'on' : ''}" data-a="fav" aria-label="Favourite" aria-pressed="${!!it.fav}">${svg('heart')}</button></div>
     <h2>${esc(it.name)}</h2>
-    <div class="detail-meta">${it.brand ? `<span class="brand">${esc(it.brand)}</span>` : ''}<span>${esc(it.sub || CATS[it.cat]?.label || '')}</span><span class="dots">${cols.map((x) => `<i style="background:${x}"></i>`).join('')}</span><span>${cols.map(colorName).join(', ')}</span></div>
+    <div class="detail-meta">${it.brand ? `<span class="brand">${esc(it.brand)}</span>` : ''}<span>${esc(it.sub || CATS[it.cat]?.label || '')}</span>${it.thrifted ? `<span class="thrift">${svg('thrift')}Thrifted</span>` : ''}<span class="dots">${cols.map((x) => `<i style="background:${x}"></i>`).join('')}</span><span>${cols.map(colorName).join(', ')}</span></div>
     ${it.notes ? `<p class="notes">${esc(it.notes)}</p>` : ''}
     <p class="worn" data-worn></p>
-    ${inLooks.length ? `<div class="in-looks" role="group" aria-label="Looks with this item">${inLooks.slice(0, 8).map((o) => `<button data-look="${o.id}" aria-label="${esc(o.name)}"><img src="${o.thumb || ''}" alt="" /></button>`).join('')}</div>` : ''}
+    ${inLooks.length ? `<div class="in-looks" role="group" aria-label="Looks with this item">${inLooks.slice(0, 8).map((o) => `<button data-look="${o.id}" aria-label="${esc(o.name)}" style="background:${boardFor(o)}"><img alt="" /></button>`).join('')}</div>` : ''}
     <div class="row-btns" style="margin-bottom:10px"><button class="btn soft" data-a="edit">Edit</button><button class="btn" data-a="look">Style</button></div>
     <button class="btn ghost block" data-a="del">Delete</button>
   </div>`);
@@ -1426,7 +1451,11 @@ function openDetail(it) {
     }
     if (view.closet.fav && state.view === 'closet') renderCloset();
   }, hapticTap: null });
-  $$('[data-look]', c).forEach((b) => press(b, { tap: () => { const o = state.outfits.find((x) => x.id === b.dataset.look); s.close(); if (o) openEditor(o); } }));
+  $$('[data-look]', c).forEach((b) => {
+    const o = state.outfits.find((x) => x.id === b.dataset.look);
+    if (o) showLookPic($('img', b), o);
+    press(b, { tap: () => { s.close(); if (o) openEditor(o); } });
+  });
   // a look built around this piece, ready to adjust
   press($('[data-a=look]', c), { tap: () => { s.close(); openEditor(null, suggestLook(it.id)); } });
   press($('[data-a=edit]', c), { tap: () => { s.close(); openAdd({ item: it }); } });
@@ -1698,6 +1727,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
     notes: item?.notes || '',
     price: item?.price ?? '',
     brand: item?.brand || '',
+    thrifted: !!item?.thrifted,
   };
 
   const c = h(`<div>
@@ -1707,7 +1737,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
   </div>`);
   const s = sheet(c);
   // swipe, scrim tap and Escape all ask first once there is a photo or a change to lose
-  const sig = () => JSON.stringify([st.original === (item?.original || null), st.cat, st.sub, st.name, st.price, st.brand, st.notes, st.tolerance, st.removeBg, st.seeds]);
+  const sig = () => JSON.stringify([st.original === (item?.original || null), st.cat, st.sub, st.name, st.price, st.brand, st.notes, st.thrifted, st.tolerance, st.removeBg, st.seeds]);
   const clean = sig();
   s.dismiss = async () => {
     if (sig() !== clean && !(await confirmSheet(item ? 'Discard changes?' : 'Discard this item?', '', 'Discard'))) return;
@@ -1792,6 +1822,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
     const open = !!item || !!state.moreOpen;
     const d = h(`<div>
       <div class="field"><label>Category</label><div class="seg">${CAT_ORDER.map((k) => `<button data-cat="${k}" class="${st.cat === k ? 'active' : ''}">${svg(k)}${CATS[k].label}</button>`).join('')}</div></div>
+      <div class="set-row thrift-row"><span id="thrift-l">${svg('thrift')}Thrifted</span><button class="switch${st.thrifted ? ' on' : ''}" role="switch" aria-checked="${st.thrifted}" data-a="thrift" aria-labelledby="thrift-l"></button></div>
       ${item ? '' : `<button class="more-toggle" data-a="more" aria-expanded="${open}"><span>Type, brand, name, notes, price</span>${svg('chev')}</button>`}
       <div class="more ${open ? 'open' : ''}" data-more>
         <div class="field"><label>Type</label><div class="wrap-chips" data-subs></div></div>
@@ -1806,6 +1837,8 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
     details.append(d);
     $('[data-brand]', d).replaceWith(brandField(() => st.brand, (v) => { st.brand = v; syncNameHint(); }));
     const notes = $('[data-notes]', d); notes.addEventListener('input', () => { st.notes = notes.value; });
+    const thrift = $('[data-a=thrift]', d);
+    press(thrift, { tap: () => { st.thrifted = !st.thrifted; thrift.classList.toggle('on', st.thrifted); thrift.setAttribute('aria-checked', String(st.thrifted)); }, hapticTap: 'select' });
     $$('[data-cat]', d).forEach((b) => press(b, { tap: () => {
       st.cat = b.dataset.cat; st.sub = null; st.autoCat = false;
       $$('[data-cat]', d).forEach((x) => x.classList.toggle('active', x === b));
@@ -1884,6 +1917,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
       notes: (st.notes || '').trim() || undefined,
       cat: st.cat, sub: st.sub,
       brand: (st.brand || '').trim() || undefined,
+      thrifted: st.thrifted || undefined,
       price: item ? (item.price ?? null) : parsePrice(st.price), // editing never touches the price
       sticker: st.result.dataURL,
       stickerDark: st.result.darkURL || (item && st.result.dataURL === itemById(item.id)?.sticker ? itemById(item.id)?.stickerDark : null) || null,
@@ -1892,6 +1926,7 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
       cut: { v: CUT_V, tolerance: st.tolerance, seeds: st.seeds, removeBg: st.removeBg },
     };
     if (!rec.brand) delete rec.brand;
+    if (!rec.thrifted) delete rec.thrifted;
     await db.put('items', rec);
     const i = state.items.findIndex((x) => x.id === rec.id);
     if (i >= 0) state.items[i] = rec; else state.items.push(rec);
@@ -2510,10 +2545,11 @@ function openMixRows() {
 
 /** A new look from these pieces, laid out by the app and added to the Looks page. */
 async function saveLook(ids) {
-  const board = isDark() ? BOARD_COLORS[BOARD_COLORS.length - 1] : BOARD_COLORS[0];
+  const board = themedBoard(BOARD_COLORS[0]);
   const ratio = lookRatio();
   const o = { id: uid(), name: 'Untitled', pieces: await layoutPieces(ids, ratio, darkBoard(board)), board, auto: prefs.tint, created: Date.now(), updated: Date.now() };
   if (o.auto) o.board = autoBoard(o);
+  o.ratio = +ratio.toFixed(4);
   o.thumb = await renderThumb(o, { W: 1, H: ratio });
   await db.put('outfits', o);
   state.outfits.push(o);
@@ -2568,12 +2604,14 @@ function renderOutfits() {
       const cols = outfitColors(o);
       const n = wears(o);
       const card = h(`<div class="look" data-id="${o.id}" style="animation-delay:${Math.min(idx, 10) * 40}ms">
-        <button class="look-open"${n ? ` aria-label="${esc(o.name)}, worn ${n} time${n === 1 ? '' : 's'}"` : ''}><span class="thumb-wrap" style="background:${o.board || 'var(--card)'}"><img class="thumb" src="${o.thumb || ''}" alt="" /></span>
+        <button class="look-open"${n ? ` aria-label="${esc(o.name)}, worn ${n} time${n === 1 ? '' : 's'}"` : ''}><span class="thumb-wrap" style="background:${boardFor(o)}"><img class="thumb" alt="" /></span>
         <span class="meta"><span class="name">${esc(o.name)}</span><span class="sub"><span class="dots">${cols.slice(0, 5).map((c) => `<i style="background:${c}"></i>`).join('')}</span>${n ? `<span class="wn">Worn ${n}×</span>` : ''}</span></span></button>
-        ${heartBtn(o)}</div>`);
+        ${o.fav ? heartBtn(o) : ''}</div>`);
       const open = $('.look-open', card);
+      showLookPic($('img.thumb', card), o);
       press(open, { tap: () => openEditor(o), long: (e) => lookMenu(o, card, e) });
-      bindHeart($('.heart', card), o, 'outfits', () => { if (view.outfits.fav) drawGrid(); });
+      const heart = $('.heart', card); // shown only on favourites; tapping it takes the favourite away
+      if (heart) bindHeart(heart, o, 'outfits', () => { if (!o.fav) { heart.classList.add('gone'); setTimeout(() => heart.remove(), 260); } if (view.outfits.fav) drawGrid(); });
       grid.append(card);
     });
     host.append(grid);
@@ -2689,7 +2727,7 @@ const forgetImgs = (id) => { for (const k of [...imgCache.keys()]) if (k === id 
 
 function openEditor(outfit = null, startIds = []) {
   const o = outfit ? structuredClone(outfit) : {
-    id: uid(), name: 'Untitled', pieces: [], board: isDark() ? BOARD_COLORS[BOARD_COLORS.length - 1] : BOARD_COLORS[0], auto: prefs.tint, created: Date.now(), updated: Date.now(),
+    id: uid(), name: 'Untitled', pieces: [], board: themedBoard(BOARD_COLORS[0]), auto: prefs.tint, created: Date.now(), updated: Date.now(),
   };
   let selected = null;
   let dirty = !outfit && startIds.length > 0;
@@ -2751,7 +2789,8 @@ function openEditor(outfit = null, startIds = []) {
   };
   // an automatic background follows the pieces
   const follow = () => { if (o.auto && o.pieces.length) { o.board = autoBoard(o); paintBoard(); } };
-  if (o.auto) o.board = autoBoard(o);
+  // the board as it shows now, in light or dark
+  o.board = o.auto ? autoBoard(o) : themedBoard(o.board || BOARD_COLORS[0]);
   paintBoard();
   const nameInp = $('[data-name]', c);
   nameInp.addEventListener('input', () => { o.name = nameInp.value; dirty = true; });
@@ -2953,7 +2992,8 @@ function openEditor(outfit = null, startIds = []) {
         $$('.sw', tray).forEach((x) => x.setAttribute('aria-pressed', String(x === auto ? !!o.auto : !o.auto && x.dataset.col === o.board)));
       }, hapticTap: 'select' });
       tray.append(auto);
-      BOARD.forEach(([label, col]) => {
+      BOARD.forEach(([label, light, deep]) => {
+        const col = isDark() ? deep : light;
         const b = h(`<button class="sw" data-col="${col}" style="background:${col}" aria-label="${label}" aria-pressed="${!o.auto && o.board === col}"></button>`);
         press(b, { tap: () => { o.auto = false; setBoard(col); $$('.sw', tray).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); }, hapticTap: 'select' });
         tray.append(b);
@@ -3066,7 +3106,9 @@ function openEditor(outfit = null, startIds = []) {
       return true;
     }
     o.updated = Date.now();
-    o.thumb = await renderThumb(o, bsize());
+    const size = bsize();
+    if (size.W > 40 && size.H > 40) o.ratio = +(size.H / size.W).toFixed(4);
+    o.thumb = await renderThumb(o, size);
     const i = state.outfits.findIndex((x) => x.id === o.id);
     if (i >= 0) state.outfits[i] = o; else state.outfits.push(o);
     await db.put('outfits', o);
@@ -3182,6 +3224,7 @@ function rememberBoard(W, H) {
 }
 /** The proportions a saved look was drawn with (taken from its picture). */
 async function lookSize(o) {
+  if (o.ratio > 0.3) return { W: 1, H: o.ratio };
   let ratio = lookRatio();
   if (o.thumb) { try { const t = await loadImage(o.thumb); ratio = t.naturalHeight / t.naturalWidth || ratio; } catch { /* keep the estimate */ } }
   return { W: 1, H: ratio };
@@ -3195,10 +3238,11 @@ async function drawLook(o, { W, H }, width) {
   const cw = width, ch = Math.round(H * scale);
   const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = o.board; ctx.fillRect(0, 0, cw, ch);
+  const board = boardFor(o);
+  ctx.fillStyle = board; ctx.fillRect(0, 0, cw, ch);
   for (const p of o.pieces) {
     const it = itemById(p.itemId); if (!it) continue;
-    const img = await getImg(it, edgeOf(o, it));
+    const img = await getImg(it, edgeOn(o, it, board));
     const w = p.w * cw, hgt = w * img.naturalHeight / img.naturalWidth;
     ctx.save();
     ctx.translate(p.x * cw, p.y * ch);
@@ -3208,6 +3252,84 @@ async function drawLook(o, { W, H }, width) {
     ctx.restore();
   }
   return cv;
+}
+
+/*
+ * A look's picture for its card (and the other small places a look shows): the card's 4:5, on the board colour
+ * for the light or dark in use, and every item whole. An item that hangs over the board's edge in the editor is
+ * cut there; here the whole look is fitted in instead, so no straight cut edge shows. Made once per visit, one at
+ * a time, so a long list of looks never holds the page up.
+ */
+const CARD_W = 480, CARD_H = 600;
+async function drawCard(o, dark = isDark()) {
+  const board = boardFor(o, dark);
+  const { H } = await lookSize(o);
+  const shown = [];
+  for (const p of o.pieces) {
+    const it = itemById(p.itemId); if (!it) continue;
+    try { shown.push({ p, img: await getImg(it, edgeOn(o, it, board)) }); } catch { /* a picture that cannot load is left out */ }
+  }
+  // what the look covers, in board widths: the board itself, and every item as turned, with a little air around those that hang over
+  let x0 = 0, x1 = 1, y0 = 0, y1 = H;
+  const air = 0.03;
+  for (const { p, img } of shown) {
+    const w = p.w, hh = w * (img.naturalHeight / img.naturalWidth || 1), a = (p.rot || 0) * Math.PI / 180;
+    const c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
+    const ex = (c * w + s * hh) / 2, ey = (s * w + c * hh) / 2, cy = p.y * H;
+    if (p.x - ex < x0) x0 = p.x - ex - air;
+    if (p.x + ex > x1) x1 = p.x + ex + air;
+    if (cy - ey < y0) y0 = cy - ey - air;
+    if (cy + ey > y1) y1 = cy + ey + air;
+  }
+  const k = Math.min(CARD_W / (x1 - x0), CARD_H / (y1 - y0));
+  const ox = (CARD_W - (x1 - x0) * k) / 2 - x0 * k, oy = (CARD_H - (y1 - y0) * k) / 2 - y0 * k;
+  const cv = document.createElement('canvas'); cv.width = CARD_W; cv.height = CARD_H;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = board; ctx.fillRect(0, 0, CARD_W, CARD_H);
+  for (const { p, img } of shown) {
+    const w = p.w * k, hgt = w * img.naturalHeight / img.naturalWidth;
+    ctx.save();
+    ctx.translate(ox + p.x * k, oy + p.y * H * k);
+    ctx.rotate((p.rot || 0) * Math.PI / 180);
+    if (p.flip) ctx.scale(-1, 1);
+    ctx.drawImage(img, -w / 2, -hgt / 2, w, hgt);
+    ctx.restore();
+  }
+  return cv;
+}
+const cardPics = new Map(); // key -> the picture's URL, or a promise of it
+const cardKeyOf = new Map(); // `${id}|${dark}` -> its latest key, so an outdated picture can be let go
+let cardLine = Promise.resolve();
+function cardKey(o, dark) {
+  const t = o.thumb || '';
+  return [o.id, o.updated || 0, t.length, t.slice(-16), dark ? 1 : 0, o.auto ? 'auto' : o.board,
+    o.pieces.map((p) => { const it = itemById(p.itemId); return `${p.itemId}:${it?.sticker?.length || 0}${it?.stickerDark ? 'd' : ''}`; }).join(',')].join('|');
+}
+/** The card picture of a look for the light or dark in use: its URL when made already, else a promise of it. */
+function cardPic(o) {
+  const dark = isDark(), key = cardKey(o, dark), slot = `${o.id}|${dark ? 1 : 0}`;
+  const have = cardPics.get(key);
+  if (have) return have;
+  const old = cardKeyOf.get(slot);
+  if (old && old !== key) cardPics.delete(old);
+  cardKeyOf.set(slot, key);
+  const made = cardLine.then(() => drawCard(o, dark)).then(
+    (cv) => { const url = cv.toDataURL('image/jpeg', 0.85); if (cardPics.get(key) === made) cardPics.set(key, url); return url; },
+    () => { cardPics.delete(key); return o.thumb || ''; });
+  cardLine = made.then(() => pause(0));
+  cardPics.set(key, made);
+  return made;
+}
+/** Puts a look's card picture into `img` now, or (fading in) once it is made. */
+function showLookPic(img, o) {
+  const v = cardPic(o);
+  if (typeof v === 'string') { img.src = v; return; }
+  img.classList.add('coming');
+  v.then((url) => {
+    if (!url) return;
+    img.addEventListener('load', () => img.classList.remove('coming'), { once: true });
+    img.src = url;
+  });
 }
 
 /* ------------------------------------------------------------------ tally + settings */
@@ -3226,27 +3348,22 @@ function renderMore() {
 }
 
 function renderStats(root) {
-  const t = totals(), now = Date.now();
+  const t = totals();
   const maxN = Math.max(1, ...CAT_ORDER.map((k) => t.by[k].n));
   const unpriced = t.n - t.priced;
   const status = unpriced ? `${unpriced} to price` : 'All priced';
   const worn = state.items.filter((i) => wears(i)).sort((x, y) => wears(y) - wears(x) || lastWear(y) - lastWear(x));
-  const lately = state.items.filter((i) => (i.worn || []).some((w) => now - w < 30 * DAY_MS)).length;
   const topLook = state.outfits.filter((o) => wears(o)).sort((x, y) => wears(y) - wears(x))[0];
-  // "not worn lately" only means something once wears are being logged
-  const logging = state.items.some((i) => (i.worn || []).some((w) => now - w < 45 * DAY_MS));
-  const resting = state.items.filter((i) => now - lastWear(i) > 30 * DAY_MS).length;
   const c = h(`<div class="stats">
     <div class="big-total"><div class="v">${t.n}</div><small>item${t.n === 1 ? '' : 's'}</small></div>
     <div class="breakdown">${CAT_ORDER.map((k, i) => `<div class="line"><span class="nm">${CATS[k].label}</span><span class="bar"><i style="width:${(t.by[k].n / maxN) * 100}%;animation-delay:${i * 70}ms"></i></span><span class="amt">${t.by[k].n}</span></div>`).join('')}</div>
     <div class="kv three">
       <div><small>Looks</small><b>${state.outfits.length}</b></div>
       <div><small>Favourites</small><b>${state.items.filter((i) => i.fav).length}</b></div>
-      <div><small>Worn this month</small><b>${lately}</b></div>
+      <div><small>Thrifted</small><b data-thrifted>${state.items.filter((i) => i.thrifted).length}</b></div>
     </div>
     ${worn.length ? `<h3 class="st-h">Most worn</h3><div class="st-pieces">${worn.slice(0, 3).map((it) => `<button data-piece="${it.id}" aria-label="${esc(it.name)}, worn ${wears(it)} times"><span class="st-tile"><img src="${stickerOf(it)}" alt="" /></span><span class="st-n">${wears(it)}×</span></button>`).join('')}</div>` : ''}
-    ${topLook ? `<h3 class="st-h">Most worn look</h3><button class="st-look" data-look="${topLook.id}"><span class="thumb-wrap" style="background:${topLook.board}"><img src="${topLook.thumb || ''}" alt="" /></span><span><b>${esc(topLook.name)}</b><small>${wears(topLook)}×</small></span></button>` : ''}
-    ${logging && resting ? `<button class="st-row" data-a="resting"><span>Not worn lately</span><b>${resting}</b>${svg('back', 'class="vp-c"')}</button>` : ''}
+    ${topLook ? `<h3 class="st-h">Most worn look</h3><button class="st-look" data-look="${topLook.id}"><span class="thumb-wrap" style="background:${boardFor(topLook)}"><img alt="" /></span><span><b>${esc(topLook.name)}</b><small>${wears(topLook)}×</small></span></button>` : ''}
     <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}, ${status}. Open the price list">
       <span class="vp-l">Closet value</span><span class="vp-v">${money(t.v)}</span>
       <span class="vp-s">${status}</span>${svg('back', 'class="vp-c"')}
@@ -3255,15 +3372,8 @@ function renderStats(root) {
   root.append(c);
   $$('[data-piece]', c).forEach((b) => press(b, { tap: () => { const it = itemById(b.dataset.piece); if (it) openDetail(it); } }));
   const tl = $('[data-look]', c);
+  if (tl) showLookPic($('img', tl), topLook);
   if (tl) press(tl, { tap: () => { const o = state.outfits.find((x) => x.id === tl.dataset.look); if (o) openEditor(o); } });
-  const rest = $('[data-a=resting]', c);
-  if (rest) press(rest, { tap: () => {
-    // the closet, showing only what has not been worn for a month
-    setView('closet');
-    resetView('closet'); view.closet.worn = 'lately'; view.closet.sort = 'least';
-    state.filterCat = 'all'; state.filterSub = null;
-    renderCloset();
-  } });
   // after pricing: refresh the numbers and hand focus back to the pill
   const prices = () => openPrices(() => { if (state.view === 'more') { renderMore(); $('#view-more [data-a=prices]')?.focus({ preventScroll: true }); } });
   press($('[data-a=prices]', c), { tap: prices, long: prices, hapticTap: 'select' });
@@ -3398,6 +3508,10 @@ function settingsPanel() {
       <button class="set-link" data-a="imp">${svg('upload')}<span>Restore a backup</span></button>
       <button class="set-link danger" data-a="wipe">${svg('trash')}<span>Clear everything</span></button>
     </div>
+    <div class="set-card">
+      <button class="set-link" data-a="privacy">${svg('shield')}<span>Privacy<small>Everything stays on this device</small></span>${svg('chev', 'class="go"')}</button>
+    </div>
+    <p class="about-foot">My Closet · Version ${APP_VERSION}</p>
   </section>`);
   const sync = () => {
     $$('[data-theme-opt]', c).forEach((b) => { const on = b.dataset.themeOpt === prefs.theme; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
@@ -3411,6 +3525,7 @@ function settingsPanel() {
   sync();
   press($('[data-a=mixrows]', c), { tap: () => openMixRows() });
   press($('[data-a=types]', c), { tap: () => openTypes() });
+  press($('[data-a=privacy]', c), { tap: () => openPrivacy() });
   press($('[data-a=exp]', c), { tap: exportData });
   press($('[data-a=imp]', c), { tap: () => { const f = $('#file-import'); f.value = ''; f.onchange = () => f.files[0] && importData(f.files[0]); f.click(); } });
   press($('[data-a=wipe]', c), { tap: async () => {
@@ -3421,6 +3536,29 @@ function settingsPanel() {
     state.items = []; state.outfits = []; resetMix(); imgCache.clear(); resetClosetFilters(); render(); toast('Cleared');
   } });
   return c;
+}
+
+/** The privacy policy, in the app itself (the same words as privacy.html, which the App Store links to). */
+function openPrivacy() {
+  const c = h(`<div class="privacy-doc"><h2>Privacy</h2><p class="when">Updated November 2026</p>
+    <p>My Closet does not collect any data about you. There is no account, no advertising, no analytics and no tracking, and the app does not connect to the internet.</p>
+    <h3>What stays on this device</h3>
+    <p>The photos you add, the cut-out items made from them, your looks, names, brands, notes, prices and wear counts are kept only on this device, inside the app. Nobody else, including the developer, can see them.</p>
+    <h3>Camera and photos</h3>
+    <p>The camera and your photo library are used only when you choose to add a picture of your clothes. The background is removed on the device; nothing is uploaded. Saving a look's picture to Photos happens only when you ask for it.</p>
+    <h3>Backups</h3>
+    <p>A backup file is made only when you tap Backup, and you choose where it goes. Restore reads only the file you pick.</p>
+    <h3>Deleting your data</h3>
+    <ul><li>More, then Clear everything, deletes every item and look.</li><li>Deleting the app deletes everything in it.</li></ul>
+    <h3>Children</h3>
+    <p>The app collects no information from anyone, including children.</p>
+    <h3>Changes</h3>
+    <p>If this ever changes, this page will say so before it does.</p>
+    <button class="btn soft block" data-a="ok">Done</button>
+  </div>`);
+  const s = sheet(c);
+  s.el.classList.add('tall');
+  press($('[data-a=ok]', c), { tap: () => s.close() });
 }
 
 async function exportData() {
@@ -3467,16 +3605,18 @@ async function edgeOlderPieces() {
       } catch { /* this one keeps its white edge */ }
       await pause(40);
     }
-    // looks on a dark board were drawn with the white edge: draw those again
+    // looks on a dark board were drawn with the white edge: draw those again (their cards too, on whichever board shows)
     for (const o of done.size ? [...state.outfits] : []) {
-      if (!darkBoard(o.board) || !o.pieces.some((p) => done.has(p.itemId))) continue;
-      try {
-        const thumb = await renderThumb(o, await lookSize(o));
-        if (state.outfits.find((x) => x.id === o.id) !== o) continue; // edited, deleted or restored meanwhile
-        o.thumb = thumb;
-        await db.put('outfits', o);
-        $$(`#view-outfits .look[data-id="${CSS.escape(o.id)}"] img.thumb`).forEach((img) => { img.src = thumb; });
-      } catch { /* keeps its old picture */ }
+      if (!o.pieces.some((p) => done.has(p.itemId))) continue;
+      if (darkBoard(o.board)) {
+        try {
+          const thumb = await renderThumb(o, await lookSize(o));
+          if (state.outfits.find((x) => x.id === o.id) !== o) continue; // edited, deleted or restored meanwhile
+          o.thumb = thumb;
+          await db.put('outfits', o);
+        } catch { /* keeps its old picture */ }
+      }
+      $$(`#view-outfits .look[data-id="${CSS.escape(o.id)}"] img.thumb`).forEach((img) => showLookPic(img, o));
     }
   } finally {
     edging = false;
@@ -3570,35 +3710,6 @@ function actionFromHash() {
   closetAction(m[1]);
 }
 
-/** Items sway a little while the closet scrolls, and settle when it stops. */
-function swayOnScroll() {
-  let lastY = window.scrollY, lastT = performance.now(), cur = 0, target = 0, raf = 0;
-  // only the tiles on screen sway (and are restyled each frame), not every tile in a large closet
-  const root = $('#view-closet'), inView = new Set();
-  const io = new IntersectionObserver((es) => es.forEach(({ target, isIntersecting }) => {
-    if (isIntersecting) inView.add(target);
-    else { inView.delete(target); target.style.removeProperty('--sway'); }
-  }));
-  const watch = () => { io.disconnect(); inView.clear(); root.querySelectorAll('.piece').forEach((t) => io.observe(t)); };
-  watch();
-  new MutationObserver(watch).observe(root, { childList: true }); // the grid is drawn again as a whole
-  const put = (v) => inView.forEach((t) => t.style.setProperty('--sway', v));
-  const tick = () => {
-    cur += (target - cur) * 0.18;
-    target *= 0.86; // the push fades: it springs back when the scrolling stops
-    put(cur.toFixed(3) + 'deg');
-    raf = Math.abs(cur) > 0.02 || Math.abs(target) > 0.02 ? requestAnimationFrame(tick) : 0;
-    if (!raf) put('0deg');
-  };
-  window.addEventListener('scroll', () => {
-    if (state.view !== 'closet' || reduceMotion() || lockY !== null || performance.now() < scrollQuietUntil) { lastY = window.scrollY; return; }
-    const now = performance.now(), dy = window.scrollY - lastY, dt = Math.max(8, now - lastT);
-    lastY = window.scrollY; lastT = now;
-    target = Math.max(-4, Math.min(4, target + (dy / dt) * 1.6));
-    if (!raf) raf = requestAnimationFrame(tick);
-  }, { passive: true });
-}
-
 /** The + : everything there is to make, on big tiles that fill most of the screen. */
 function openCreate() {
   const none = !state.items.length;
@@ -3645,7 +3756,6 @@ function quickPick(kind) {
   await load();
   render();
   if (nativeChrome()) document.documentElement.classList.add('native-bar');
-  swayOnScroll();
   postChrome();
   setTimeout(edgeOlderPieces, 900);
   actionFromHash();

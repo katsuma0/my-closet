@@ -38,7 +38,7 @@ Inside the app the tab bar and the + are native iOS controls; the web page's own
 5. Let the page change tab by itself: with the app on Closet, go to the home screen, long-press the icon and pick Mix. The app comes back on Mix, and the Mix tab is selected.
 6. In More, set the theme to Dark while the iPhone is in Light mode: the bar, the + menu and the status bar turn dark too. Set it back to Auto.
 7. With VoiceOver on, swipe to the bar: each tab is read with its place, then the + as "Add". With Settings > Accessibility > Motion > Reduce Motion on, the bar fades instead of sliding.
-8. On iOS 26, check that the round + sits in the middle of the glass bar, level with the tabs and well inside the capsule. If not, change `plusSize` in `AppViewController.swift` (search for "chosen without a device").
+8. On iOS 26, check that the round + sits in the middle of the glass bar, level with the tabs and well inside the capsule. It is moved down by `plusDrop` (6 points, measured from an iPhone screenshot) to sit level in the capsule; if it is still too high or too low, change `plusDrop`, and if it is too big or too small, `plusSize`, both in `AppViewController.swift` (search for "chosen without a device").
 
 ## Test long press
 
@@ -65,7 +65,7 @@ The web app ignores a quick action while one of its sheets or menus is open; clo
 
 ## Releasing to the App Store
 
-What the project already has: version 1.0, build 1, the home-screen name "Closet", an app icon, a launch screen in the app's paper colour, a privacy manifest (`PrivacyInfo.xcprivacy`: no tracking, no data collected, no required-reason APIs) and `ITSAppUsesNonExemptEncryption` = NO in `Info.plist` (the app only uses the encryption built into iOS), so App Store Connect asks no export questions.
+What the project already has: version 1.0, build 1 (More shows the version from `APP_VERSION` in `js/app.js`: change both together), the home-screen name "Closet", an app icon, a launch screen in the app's paper colour, a privacy manifest (`PrivacyInfo.xcprivacy`: no tracking, no data collected, no required-reason APIs) and `ITSAppUsesNonExemptEncryption` = NO in `Info.plist` (the app only uses the encryption built into iOS), so App Store Connect asks no export questions. The privacy policy is in the app too (More > Privacy), as Apple asks, with the same words as `privacy.html`.
 
 1. **Join the Apple Developer Program** (paid, yearly) with the Apple ID you will publish under, then choose that team in Signing & Capabilities. Keep "Automatically manage signing" on.
 2. **Pick the final bundle identifier** (Run it, step 2), such as `com.yourname.closet`. It cannot change after the first release, and the saved closet belongs to it.
@@ -73,9 +73,10 @@ What the project already has: version 1.0, build 1, the home-screen name "Closet
 4. **Archive and upload.** In Xcode 26 choose Any iOS Device (arm64) as the destination, then Product > Archive. In the Organizer that opens, Distribute App > App Store Connect > Upload. Every later upload needs a higher build number: Closet target > General > Build (`CURRENT_PROJECT_VERSION`).
 5. **Try it in TestFlight** on your iPhone before you submit: the uploaded build appears there after processing.
 6. **Screenshots.** At least one iPhone screenshot at 1179 × 2556 (iPhone with Dynamic Island, portrait; 1206 × 2622 is also taken), up to 10. Because the app also runs on iPad (`TARGETED_DEVICE_FAMILY` = 1,2), at least one iPad 13-inch screenshot, 2064 × 2752 (or 2048 × 2732). PNG or JPEG, no transparency. The Simulator's File > Save Screen gives the right sizes (iPhone 17 or 16 for the first, iPad Pro 13-inch for the second). To publish for iPhone only, set Targeted Device Family to iPhone before the first upload.
-7. **App Privacy.** Answer "Data Not Collected": everything stays on the phone (localStorage and IndexedDB in the app), there are no accounts, analytics or ads, and photos never leave the device. Apple also asks for a privacy policy URL; a short page saying exactly that is enough. The display font is bundled with the app (`css/fonts`), so the app makes no network requests at all.
-8. **The rest of the version page:** description, keywords, support URL, category (Lifestyle fits), the age rating questionnaire (no objectionable content, so the lowest rating), price and availability.
-9. **Review notes.** Say that the app needs no account, works offline, and uses the camera and photo library only to add pictures of the user's own clothes. Apple turns down apps that are only a website in a wrapper (guideline 4.2), so mention what is native here: the iOS tab bar and menus, haptics, home-screen quick actions, the share sheet, and that the whole app runs from the bundle without the web.
+7. **App Privacy.** Answer "Data Not Collected": everything stays on the phone (localStorage and IndexedDB in the app), there are no accounts, analytics or ads, and photos never leave the device. The display font is bundled with the app (`css/fonts`), so the app makes no network requests at all.
+8. **Privacy policy and support URLs.** Both pages are in the repo: `privacy.html` and `support.html` (they are not copied into the app). Publish them with GitHub Pages: on GitHub, the repo's Settings > Pages, Source: Deploy from a branch, Branch: `main`, folder `/ (root)`, Save. After a minute they are at `https://katsuma0.github.io/my-closet/privacy.html` and `https://katsuma0.github.io/my-closet/support.html`; open both to check, then paste them into App Store Connect (App Privacy > Privacy Policy URL, and the version page's Support URL). The support page points questions to the repo's GitHub issues; change its Contact paragraph if you prefer another way.
+9. **The rest of the version page:** description, keywords, category (Lifestyle fits), the age rating questionnaire (no objectionable content, so the lowest rating), price and availability.
+10. **Review notes.** Say that the app needs no account, works offline, and uses the camera and photo library only to add pictures of the user's own clothes. Apple turns down apps that are only a website in a wrapper (guideline 4.2), so mention what is native here: the iOS tab bar and menus, haptics, home-screen quick actions, the share sheet, and that the whole app runs from the bundle without the web.
 
 Then Add for Review, and Submit.
 
