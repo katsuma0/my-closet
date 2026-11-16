@@ -84,24 +84,21 @@ const state = {
 
 /* Appearance choices. Kept in localStorage so index.html can apply them before first paint. */
 const PREFS_KEY = 'closet.prefs';
-// the version people see in More; the iOS app's MARKETING_VERSION says the same
-const APP_VERSION = '1.0';
-// tint: each item's card (and each new look's board) takes a soft colour from it, always; reduce: Reduce motion
-const prefs = { theme: 'system', tint: true, reduce: false };
+// tint: each item's card (and each new look's board) takes a soft colour from it, always
+const prefs = { theme: 'system', tint: true };
 try {
   const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
   if (['system', 'light', 'dark'].includes(saved.theme)) prefs.theme = saved.theme;
-  prefs.reduce = !!saved.reduce;
 } catch { /* private mode: defaults */ }
-/** Reduce motion: chosen in More, or asked for by the phone. */
-const reduceMotion = () => prefs.reduce || !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+/** Less motion when the phone asks for it (Settings > Accessibility > Motion > Reduce Motion). */
+const reduceMotion = () => !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 const smooth = () => (reduceMotion() ? 'auto' : 'smooth');
 const isDark = () => prefs.theme === 'dark' || (prefs.theme === 'system' && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
 function applyPrefs(save = true) {
   const r = document.documentElement;
   if (prefs.theme === 'system') r.removeAttribute('data-theme'); else r.dataset.theme = prefs.theme;
   r.removeAttribute('data-contrast'); // an option that no longer exists
-  r.classList.toggle('reduce-motion', prefs.reduce);
+  r.classList.remove('reduce-motion'); // an option that no longer exists
   document.querySelector('meta[name=theme-color]')?.setAttribute('content', isDark() ? '#1b1917' : '#f6f3ee');
   if (save) {
     try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* not stored, still applied */ }
@@ -599,7 +596,7 @@ function sheet(content, { full = false, onClose } = {}) {
 const nativeChrome = () => window.webkit?.messageHandlers?.chrome;
 const TAB_OF = { closet: 'closet', mix: 'mix', outfits: 'looks', more: 'more' };
 function postChrome() {
-  try { nativeChrome()?.postMessage({ type: 'state', tab: TAB_OF[state.view] || 'closet', bar: !(stack.length || menuOpen || menuActing || sel.on) }); } catch { /* not in the app */ }
+  try { nativeChrome()?.postMessage({ type: 'state', tab: TAB_OF[state.view] || 'closet', bar: !(stack.length || menuOpen || menuActing || sel.on || loadingEl) }); } catch { /* not in the app */ }
   document.body.classList.toggle('choosing', sel.on);
   $('#tabbar').inert = sel.on; // out of sight while choosing: out of reach too
 }
@@ -716,6 +713,30 @@ function contextMenu(anchor, title, actions, point) {
   scrim.addEventListener('contextmenu', (e) => { e.preventDefault(); close(); });
   document.addEventListener('keydown', onKey, true);
 }
+
+/*
+ * A small card in the middle of the screen while picked photos are read and their backgrounds removed, so the
+ * wait never looks like the app has stopped. Its ring turns on its own, even while the page is busy working.
+ */
+let loadingEl = null;
+function showLoading(text) {
+  if (!loadingEl) {
+    loadingEl = h('<div class="loading-screen" role="status" aria-live="polite"><div class="ld-card"><div class="ld-ring" aria-hidden="true"></div><p class="ld-text"></p></div></div>');
+    document.body.append(loadingEl); // at full strength at once: a fade-in could stall while the photo is being worked on
+    postChrome();
+  }
+  $('.ld-text', loadingEl).textContent = text;
+}
+function hideLoading() {
+  if (!loadingEl) return;
+  const el = loadingEl;
+  loadingEl = null;
+  el.classList.add('out');
+  setTimeout(() => el.remove(), 400);
+  postChrome();
+}
+/** Resolves once what was just changed on the page has been drawn (so a loading card shows before heavy work). */
+const painted = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0))));
 
 let toastTimer;
 /** A short note at the top. With `action` ({ label, run }) it carries one button, such as Undo, and stays a little longer. */
@@ -1774,8 +1795,11 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
       const files = [...(input.files || [])];
       if (!files.length) return;
       if (multi && files.length > 1) {
+        showLoading(`Getting ${files.length} photos ready`);
+        await painted();
         s.close();
         openBatch(files, cat || (state.filterCat !== 'all' ? state.filterCat : null));
+        await painted(); hideLoading();
         return;
       }
       await useFile(files[0]);
@@ -1784,18 +1808,23 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
   }
 
   async function useFile(f) {
-    let shot;
-    try { shot = await photoFromFile(f); } catch {
-      haptic('warning'); toast('Photo could not be read');
-      if (!st.raster && !item) renderPick();
-      return;
-    }
-    st.original = shot.original;
-    st.raster = shot.raster;
-    st.seeds = [];
-    st.result = null;
-    await renderStage().process();
-    renderDetails();
+    showLoading('Getting your photo ready');
+    try {
+      await painted();
+      let shot;
+      try { shot = await photoFromFile(f); } catch {
+        haptic('warning'); toast('Photo could not be read');
+        if (!st.raster && !item) renderPick();
+        return;
+      }
+      st.original = shot.original;
+      st.raster = shot.raster;
+      st.seeds = [];
+      st.result = null;
+      showLoading('Removing the background');
+      await renderStage().process();
+      renderDetails();
+    } finally { hideLoading(); }
   }
 
   function renderStage() {
@@ -3498,7 +3527,6 @@ function settingsPanel() {
     <div class="set-card">
       <div class="set-row"><span id="set-theme">Appearance</span><div class="seg three" role="group" aria-labelledby="set-theme">
         ${[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-theme-opt="${k}">${l}</button>`).join('')}</div></div>
-      <div class="set-row opt"><span id="set-motion">Reduce motion</span><button class="switch" role="switch" data-a="motion" aria-labelledby="set-motion"></button></div>
     </div>
     <div class="set-card">
       <button class="set-link" data-a="types">${svg('tag')}<span>Types<small>Choose the types each category offers</small></span>${svg('chev', 'class="go"')}</button>
@@ -3512,17 +3540,14 @@ function settingsPanel() {
     <div class="set-card">
       <button class="set-link" data-a="privacy">${svg('shield')}<span>Privacy<small>Everything stays on this device</small></span>${svg('chev', 'class="go"')}</button>
     </div>
-    <p class="about-foot">My Closet · Version ${APP_VERSION}</p>
   </section>`);
   const sync = () => {
     $$('[data-theme-opt]', c).forEach((b) => { const on = b.dataset.themeOpt === prefs.theme; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
-    const m = $('[data-a=motion]', c); m.classList.toggle('on', prefs.reduce); m.setAttribute('aria-checked', String(prefs.reduce));
   };
   // items are drawn with a different sticker edge on dark, so the pages are drawn again
   // applyPrefs draws the More page again: focus (and VoiceOver) stays on the control just used, in the new panel
   const refocus = (q) => $(`#view-more ${q}`)?.focus({ preventScroll: true });
   $$('[data-theme-opt]', c).forEach((b) => press(b, { tap: () => { prefs.theme = b.dataset.themeOpt; applyPrefs(); sync(); refocus(`[data-theme-opt="${prefs.theme}"]`); }, hapticTap: 'select' }));
-  press($('[data-a=motion]', c), { tap: () => { prefs.reduce = !prefs.reduce; applyPrefs(); sync(); refocus('[data-a=motion]'); }, hapticTap: 'select' });
   sync();
   press($('[data-a=mixrows]', c), { tap: () => openMixRows() });
   press($('[data-a=types]', c), { tap: () => openTypes() });
@@ -3541,24 +3566,21 @@ function settingsPanel() {
 
 /** The privacy policy, in the app itself (the same words as privacy.html, which the App Store links to). */
 function openPrivacy() {
-  const c = h(`<div class="privacy-doc"><h2>Privacy</h2><p class="when">Updated November 2026</p>
-    <p>My Closet does not collect any data about you. There is no account, no advertising, no analytics and no tracking, and the app does not connect to the internet.</p>
-    <h3>What stays on this device</h3>
-    <p>The photos you add, the cut-out items made from them, your looks, names, brands, notes, prices and wear counts are kept only on this device, inside the app. Nobody else, including the developer, can see them.</p>
+  const c = h(`<div class="privacy-doc"><h2>Privacy Policy</h2><p class="when">Last updated November 2026</p>
+    <p>My Closet does not collect, share or sell any personal information.</p>
+    <h3>Your data</h3>
+    <p>Everything you add, including photos, items, looks and notes, is stored only on your device. It is never sent to us or to anyone else.</p>
     <h3>Camera and photos</h3>
-    <p>The camera and your photo library are used only when you choose to add a picture of your clothes. The background is removed on the device; nothing is uploaded. Saving a look's picture to Photos happens only when you ask for it.</p>
-    <h3>Backups</h3>
-    <p>A backup file is made only when you tap Backup, and you choose where it goes. Restore reads only the file you pick.</p>
+    <p>The app uses the camera and photo library only when you choose to add a photo or save a look. Photos are processed entirely on your device.</p>
+    <h3>No tracking</h3>
+    <p>The app has no accounts, advertising, analytics or tracking, and does not connect to the internet.</p>
     <h3>Deleting your data</h3>
-    <ul><li>More, then Clear everything, deletes every item and look.</li><li>Deleting the app deletes everything in it.</li></ul>
-    <h3>Children</h3>
-    <p>The app collects no information from anyone, including children.</p>
+    <p>You can delete all of your data at any time with More &gt; Clear everything, or by deleting the app.</p>
     <h3>Changes</h3>
-    <p>If this ever changes, this page will say so before it does.</p>
+    <p>Any updates to this policy will be posted here.</p>
     <button class="btn soft block" data-a="ok">Done</button>
   </div>`);
   const s = sheet(c);
-  s.el.classList.add('tall');
   press($('[data-a=ok]', c), { tap: () => s.close() });
 }
 
@@ -3697,7 +3719,7 @@ function bindChrome() {
  * installed web app's shortcuts open the page with #action=name. Ignored while something is open on screen.
  */
 function closetAction(name) {
-  if (stack.length || menuOpen) return false;
+  if (stack.length || menuOpen || loadingEl) return false;
   const run = { create: () => openCreate(), add: () => openAdd(), look: () => openEditor(), surprise: () => surpriseLook(), mix: () => setView('mix'), more: () => setView('more'), stats: () => setView('more'), closet: () => setView('closet'), looks: () => setView('outfits') }[name];
   if (!run) return false;
   run();
@@ -3742,10 +3764,16 @@ function quickPick(kind) {
   const input = kind === 'camera' ? $('#file-camera') : $('#file-library');
   input.value = '';
   if (kind === 'library') input.multiple = true;
-  input.onchange = () => {
+  input.onchange = async () => {
     const files = [...(input.files || [])];
-    if (files.length > 1) openBatch(files, state.filterCat !== 'all' ? state.filterCat : null);
-    else if (files[0]) openAdd({ source: files[0], kind });
+    if (!files.length) return;
+    // the card shows at once, before the item sheet opens and the photo is read
+    showLoading(files.length > 1 ? `Getting ${files.length} photos ready` : 'Getting your photo ready');
+    await painted();
+    try {
+      if (files.length > 1) { openBatch(files, state.filterCat !== 'all' ? state.filterCat : null); await painted(); }
+      else await openAdd({ source: files[0], kind });
+    } finally { hideLoading(); }
   };
   input.click();
 }

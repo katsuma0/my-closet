@@ -755,13 +755,6 @@ body.choosing #tabbar { transform: translate(-50%, 160%); opacity: 0; pointer-ev
 .btn { transition: transform .35s var(--spring), background .3s var(--ease), color .3s var(--ease), opacity .3s; }
 .btn.pressing { transform: scale(.95) !important; }
 
-/* ---------- Reduce motion (More > Settings): things simply appear ---------- */
-html.reduce-motion *, html.reduce-motion *::before, html.reduce-motion *::after {
-  animation-duration: .01ms !important; animation-delay: 0s !important;
-  transition-duration: .01ms !important; transition-delay: 0s !important;
-  scroll-behavior: auto !important;
-}
-
 /* ---------- Settings: a slimmer Appearance control ---------- */
 .set-row .seg.three { padding: 3px; gap: 3px; border-radius: 13px; }
 .set-row .seg.three button { height: 32px; border-radius: 10px; font-size: calc(13.5px * var(--ts)); }
@@ -866,9 +859,25 @@ html.locked body { height: auto; min-height: 100%; }
 .detail-meta .thrift svg { width: 13px; height: 13px; }
 .detail-meta { flex-wrap: wrap; row-gap: 8px; }
 
-/* ---------- About and privacy ---------- */
-.about-foot { text-align: center; color: var(--ink-3); font-size: calc(12.5px * var(--ts)); margin: 18px 0 6px; }
+/* ---------- privacy ---------- */
 .privacy-doc h3 { font-size: calc(15px * var(--ts)); font-weight: 600; margin: 18px 0 6px; }
 .privacy-doc p, .privacy-doc li { color: var(--ink-2); font-size: calc(14.5px * var(--ts)); line-height: 1.5; margin: 0 0 8px; }
 .privacy-doc ul { padding-left: 20px; margin: 0 0 8px; }
 .privacy-doc .when { color: var(--ink-3); font-size: calc(12.5px * var(--ts)); margin: -12px 0 14px; }
+
+/* ---------- a small loading card while photos are read and cut out ---------- */
+.loading-screen {
+  position: fixed; inset: 0; z-index: 85; display: grid; place-items: center;
+  background: var(--scrim); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  transition: opacity .3s var(--ease); touch-action: none;
+}
+.loading-screen.out { opacity: 0; pointer-events: none; }
+.ld-card {
+  display: flex; flex-direction: column; align-items: center; gap: 16px; min-width: 210px; max-width: calc(100vw - 64px);
+  padding: 28px 30px 24px; border-radius: 26px; background: var(--bg); box-shadow: var(--shadow-md);
+  transition: transform .3s var(--ease);
+}
+.loading-screen.out .ld-card { transform: scale(.96); }
+.ld-ring { width: 42px; height: 42px; border-radius: 50%; border: 3px solid var(--soft); border-top-color: var(--sage-deep); animation: spin .9s linear infinite; will-change: transform; }
+.ld-text { margin: 0; text-align: center; color: var(--ink); font-size: calc(15px * var(--ts)); font-weight: 500; }
+@media (prefers-reduced-motion: reduce) { .ld-ring { animation-duration: 2.4s; } }
