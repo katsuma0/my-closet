@@ -65,7 +65,7 @@ The web app ignores a quick action while one of its sheets or menus is open; clo
 
 ## Releasing to the App Store
 
-What the project already has: version 1.0, build 1 (More shows the version from `APP_VERSION` in `js/app.js`: change both together), the home-screen name "Closet", an app icon, a launch screen in the app's paper colour, a privacy manifest (`PrivacyInfo.xcprivacy`: no tracking, no data collected, no required-reason APIs) and `ITSAppUsesNonExemptEncryption` = NO in `Info.plist` (the app only uses the encryption built into iOS), so App Store Connect asks no export questions. The privacy policy is in the app too (More > Privacy), as Apple asks, with the same words as `privacy.html`.
+What the project already has: version 1.0, build 1, the home-screen name "Closet", an app icon, a launch screen in the app's paper colour, a privacy manifest (`PrivacyInfo.xcprivacy`: no tracking, no data collected, no required-reason APIs) and `ITSAppUsesNonExemptEncryption` = NO in `Info.plist` (the app only uses the encryption built into iOS), so App Store Connect asks no export questions. The privacy policy is in the app too (More > Privacy), as Apple asks, with the same words as `privacy.html`.
 
 1. **Join the Apple Developer Program** (paid, yearly) with the Apple ID you will publish under, then choose that team in Signing & Capabilities. Keep "Automatically manage signing" on.
 2. **Pick the final bundle identifier** (Run it, step 2), such as `com.yourname.closet`. It cannot change after the first release, and the saved closet belongs to it.
