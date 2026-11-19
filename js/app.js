@@ -1111,17 +1111,16 @@ function sortableGrid(grid, done) {
   const at = (el) => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; };
   // where a card sits in the grid's layout, leaving out any move it is still animating (the grid is positioned)
   const slot = (el) => { const g = grid.getBoundingClientRect(); return { x: g.left + el.offsetLeft, y: g.top + el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }; };
+  // the card lifted under the finger is a floating copy, so it follows the finger exactly, above everything,
+  // while the card itself stays in the grid as a faint gap that shows where it will land
   function place() {
-    const base = drag.base;
-    drag.card.style.transform = `translate(${drag.px - drag.gx - base.x}px, ${drag.py - drag.gy - base.y}px) scale(1.06)`;
+    drag.ghost.style.transform = `translate(${drag.px - drag.sx}px, ${drag.py - drag.sy}px) scale(1.08)`;
   }
-  function measureBase() { drag.base = slot(drag.card); }
   function moveTo(target) {
     const list = cards(), from = list.indexOf(drag.card), to = list.indexOf(target);
     if (from < 0 || to < 0 || from === to) return;
     const before = new Map(list.map((c) => [c, at(c)]));
     grid.insertBefore(drag.card, to > from ? target.nextSibling : target);
-    measureBase(); place();
     for (const c of cards()) {
       if (c === drag.card) continue;
       const a = before.get(c), b = at(c);
@@ -1137,7 +1136,7 @@ function sortableGrid(grid, done) {
     if (!drag) return;
     const edge = 90, bottomEdge = window.innerHeight - 140;
     const v = drag.py < edge ? -Math.ceil((edge - drag.py) / 6) : drag.py > bottomEdge ? Math.ceil((drag.py - bottomEdge) / 6) : 0;
-    if (v) { window.scrollBy(0, v); measureBase(); place(); hover(); }
+    if (v) { window.scrollBy(0, v); hover(); }
     raf = requestAnimationFrame(track);
   }
   function hover() {
@@ -1146,9 +1145,17 @@ function sortableGrid(grid, done) {
   }
   function begin() {
     const r = at(drag.card);
-    drag.on = true; drag.gx = drag.sx - r.x; drag.gy = drag.sy - r.y;
+    drag.on = true;
+    const ghost = drag.card.cloneNode(true);
+    ghost.removeAttribute('data-id');
+    $$('[id]', ghost).forEach((n) => n.removeAttribute('id'));
+    ghost.classList.add('drag-ghost');
+    ghost.setAttribute('aria-hidden', 'true');
+    Object.assign(ghost.style, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px' });
+    document.body.append(ghost);
+    drag.ghost = ghost;
     drag.card.classList.add('dragging');
-    measureBase(); place();
+    requestAnimationFrame(() => { if (drag?.ghost === ghost) { ghost.classList.add('up'); place(); } });
     haptic('medium');
     raf = requestAnimationFrame(track);
   }
@@ -1158,9 +1165,11 @@ function sortableGrid(grid, done) {
     if (!drag) return;
     const d = drag; drag = null;
     if (!d.on) return;
-    d.card.style.transition = 'transform .3s var(--spring)'; d.card.style.transform = '';
-    d.card.classList.remove('dragging');
-    setTimeout(() => { d.card.style.transition = ''; }, 320);
+    // the copy settles into the gap, then the card takes its place again
+    const to = at(d.card), g = d.ghost;
+    g.classList.remove('up'); g.classList.add('settle');
+    g.style.transform = `translate(${to.x - parseFloat(g.style.left)}px, ${to.y - parseFloat(g.style.top)}px)`;
+    setTimeout(() => { g.remove(); d.card.classList.remove('dragging'); }, reduceMotion() ? 0 : 280);
     done(cards().map((c) => c.dataset.id));
   }
   grid.addEventListener('pointerdown', (e) => {
