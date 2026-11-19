@@ -910,7 +910,13 @@ html.locked body { height: auto; min-height: 100%; }
 .grid.moving > [data-id]:not(.dragging), .looks.moving > [data-id]:not(.dragging) { animation: wobble .5s ease-in-out infinite alternate; }
 .grid.moving > [data-id]:nth-child(2n):not(.dragging), .looks.moving > [data-id]:nth-child(2n):not(.dragging) { animation-delay: -.25s; }
 @keyframes wobble { from { rotate: -.6deg; } to { rotate: .6deg; } }
-.moving .dragging { z-index: 20; position: relative; cursor: grabbing; filter: drop-shadow(0 18px 26px rgba(40, 30, 20, .22)); }
+/* the card being moved leaves a faint gap where it will land; a copy of it follows the finger */
+.moving > .dragging { animation: none !important; opacity: .22; }
+.drag-ghost { position: fixed; z-index: 95; margin: 0; pointer-events: none; animation: none !important; cursor: grabbing;
+  transition: transform .18s var(--ease), filter .18s var(--ease); will-change: transform; }
+.drag-ghost.up { transition: filter .2s var(--ease); filter: drop-shadow(0 22px 28px rgba(40, 30, 20, .28)); }
+.drag-ghost.settle { transition: transform .26s var(--spring), filter .26s var(--ease); }
+.drag-ghost .heart { display: none; }
 .moving .heart { display: none; }
 #select-btn.done { background: var(--ink); color: var(--bg); }
 @media (prefers-reduced-motion: reduce) { .grid.moving > [data-id], .looks.moving > [data-id] { animation: none !important; } }
