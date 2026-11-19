@@ -596,7 +596,7 @@ function sheet(content, { full = false, onClose } = {}) {
 const nativeChrome = () => window.webkit?.messageHandlers?.chrome;
 const TAB_OF = { closet: 'closet', mix: 'mix', outfits: 'looks', more: 'more' };
 function postChrome() {
-  try { nativeChrome()?.postMessage({ type: 'state', tab: TAB_OF[state.view] || 'closet', bar: !(stack.length || menuOpen || menuActing || sel.on || loadingEl) }); } catch { /* not in the app */ }
+  try { nativeChrome()?.postMessage({ type: 'state', tab: TAB_OF[state.view] || 'closet', bar: !(stack.length || menuOpen || menuActing || sel.on || reorder.on || loadingEl) }); } catch { /* not in the app */ }
   document.body.classList.toggle('choosing', sel.on);
   $('#tabbar').inert = sel.on; // out of sight while choosing: out of reach too
 }
@@ -806,13 +806,18 @@ function moveTabInd() {
 function syncSelectTitle() {
   const btn = $('#select-btn');
   if (!btn) return;
-  const show = state.view === 'closet' && state.items.length > 0;
+  const moving = reorder.on && reorder.on === state.view;
+  const show = moving || (state.view === 'closet' && state.items.length > 0);
   btn.hidden = !show;
-  btn.textContent = sel.on ? 'Done' : 'Select';
-  if (state.view === 'closet') $('#view-title').textContent = sel.on ? (sel.ids.size ? `${sel.ids.size} chosen` : 'Choose items') : 'My Closet';
+  btn.textContent = sel.on || moving ? 'Done' : 'Select';
+  btn.classList.toggle('done', !!(sel.on || moving));
+  if (moving) $('#view-title').textContent = 'Drag to move';
+  else if (state.view === 'closet') $('#view-title').textContent = sel.on ? (sel.ids.size ? `${sel.ids.size} chosen` : 'Choose items') : 'My Closet';
+  else if (state.view === 'outfits') $('#view-title').textContent = $('#view-outfits').dataset.title;
 }
 function render() {
   if (state.view !== 'closet' && sel.on) { sel.on = false; sel.ids.clear(); $('#select-bar')?.remove(); }
+  if (reorder.on && reorder.on !== state.view) reorder.on = null;
   syncSelectTitle();
   if (state.view === 'closet') renderCloset();
   if (state.view === 'mix') renderMix();
@@ -884,8 +889,8 @@ function renderCloset() {
         <button class="btn" data-a="cam">${svg('camera')}<span>Take photo</span></button>
         <button class="btn soft" data-a="lib">${svg('image')}<span>Choose photos</span></button>
       </div></div>`);
-    press($('[data-a=cam]', e), { tap: () => quickPick('camera') });
-    press($('[data-a=lib]', e), { tap: () => quickPick('library') });
+    press($('[data-a=cam]', e), { tap: () => photoGuide(quickPick, 'camera') });
+    press($('[data-a=lib]', e), { tap: () => photoGuide(quickPick, 'library') });
     root.append(e);
     return;
   }
@@ -948,7 +953,8 @@ function renderCloset() {
         ${it.fav ? heartBtn(it) : ''}</div>`);
       const open = $('.piece-open', card);
       tintOutline($('.sticker', card), it);
-      if (sel.on) {
+      if (reorder.on === 'closet') card.classList.add('moving');
+      else if (sel.on) {
         card.classList.add('choosing'); card.classList.toggle('chosen', sel.ids.has(it.id));
         open.setAttribute('aria-pressed', String(sel.ids.has(it.id)));
         card.append(h(`<span class="tick-mark" aria-hidden="true">${svg('check')}</span>`));
@@ -962,6 +968,7 @@ function renderCloset() {
       if (heart) bindHeart(heart, it, 'items', () => { if (!it.fav) { heart.classList.add('gone'); setTimeout(() => heart.remove(), 260); } if (view.closet.fav) drawGrid(); });
       grid.append(card);
     });
+    if (reorder.on === 'closet') { grid.classList.add('moving'); sortableGrid(grid, (ids) => saveOrder('closet', ids)); }
     host.append(grid);
   }
   drawGrid();
@@ -1014,8 +1021,8 @@ const DAY_MS = 86400000;
 const lastWear = (x) => (wears(x) ? x.worn[x.worn.length - 1] : 0);
 /** Sort and filter choices for each page. The sort is remembered on this device; the filters are not. */
 const SORTS = {
-  closet: [['new', 'Newest'], ['old', 'Oldest'], ['colour', 'Colour'], ['name', 'Name'], ['most', 'Most worn'], ['least', 'Least worn']],
-  outfits: [['new', 'Newest'], ['old', 'Oldest'], ['most', 'Most worn'], ['least', 'Least worn'], ['colour', 'Colour'], ['name', 'Name']],
+  closet: [['new', 'Newest'], ['old', 'Oldest'], ['custom', 'My order'], ['colour', 'Colour'], ['name', 'Name'], ['most', 'Most worn'], ['least', 'Least worn']],
+  outfits: [['new', 'Newest'], ['old', 'Oldest'], ['custom', 'My order'], ['most', 'Most worn'], ['least', 'Least worn'], ['colour', 'Colour'], ['name', 'Name']],
 };
 const WORN = [['any', 'Any'], ['lately', 'Not lately'], ['never', 'Never']];
 const view = { closet: { sort: 'new', colours: [], worn: 'any', fav: false, brands: [] }, outfits: { sort: 'new', colours: [], worn: 'any', fav: false, brands: [] } };
@@ -1036,15 +1043,144 @@ function sortFilter(list, k, cols, created) {
   if (v.brands.length) out = out.filter((x) => x.brand && v.brands.some((b) => b.toLowerCase() === x.brand.toLowerCase()));
   if (v.worn === 'never') out = out.filter((x) => !wears(x));
   if (v.worn === 'lately') out = out.filter((x) => now - lastWear(x) > 30 * DAY_MS);
-  const by = {
+  return [...out].sort(sorter(v.sort, cols, created));
+}
+/** How a page is sorted. "My order": the order set by dragging; things added since then come first, newest first. */
+function sorter(sort, cols, created) {
+  return {
+    custom: (a, b) => {
+      const oa = a.order ?? null, ob = b.order ?? null;
+      if (oa === null || ob === null) return oa === ob ? created(b) - created(a) : oa === null ? -1 : 1;
+      return oa - ob;
+    },
     new: (a, b) => created(b) - created(a),
     old: (a, b) => created(a) - created(b),
     name: (a, b) => (a.name || '').localeCompare(b.name || ''),
     most: (a, b) => wears(b) - wears(a) || lastWear(b) - lastWear(a),
     least: (a, b) => wears(a) - wears(b) || lastWear(a) - lastWear(b),
     colour: (a, b) => rainbowKey(cols(a)[0]) - rainbowKey(cols(b)[0]),
-  }[v.sort] || ((a, b) => created(b) - created(a));
-  return [...out].sort(by);
+  }[sort] || ((a, b) => created(b) - created(a));
+}
+
+/*
+ * Reordering: the closet's items or the looks, dragged into an order of one's own. It starts from the order on
+ * screen, and the page then sorts by "My order". With a filter or search on, the items shown swap places among
+ * themselves and everything else stays where it was.
+ */
+const reorder = { on: null }; // 'closet' | 'outfits' | null
+const PAGE = {
+  closet: { list: () => state.items, store: 'items', cols: mainColors, created: (i) => i.created },
+  outfits: { list: () => state.outfits, store: 'outfits', cols: (o) => outfitColors(o), created: (o) => o.created || o.updated },
+};
+function startReorder(k) {
+  const pg = PAGE[k], v = view[k];
+  if (v.sort !== 'custom') {
+    // the order on screen becomes "my order", so nothing jumps
+    [...pg.list()].sort(sorter(v.sort, pg.cols, pg.created)).forEach((x, i) => { x.order = i; db.put(pg.store, x); });
+    v.sort = 'custom';
+    try { localStorage.setItem('closet.sort', JSON.stringify({ closet: view.closet.sort, outfits: view.outfits.sort })); } catch { /* this visit only */ }
+  }
+  if (sel.on) { sel.on = false; sel.ids.clear(); $('#select-bar')?.remove(); }
+  reorder.on = k;
+  haptic('medium');
+  render(); postChrome();
+}
+function endReorder() {
+  if (!reorder.on) return;
+  reorder.on = null;
+  haptic('light');
+  render(); postChrome();
+}
+/** Saves the order of the things shown (ids in their new order) into the whole list's order. */
+async function saveOrder(k, ids) {
+  const pg = PAGE[k];
+  const full = [...pg.list()].sort(sorter('custom', pg.cols, pg.created));
+  const shown = new Set(ids);
+  const slots = full.map((x, i) => (shown.has(x.id) ? i : -1)).filter((i) => i >= 0);
+  const byId = new Map(full.map((x) => [x.id, x]));
+  ids.forEach((id, j) => { full[slots[j]] = byId.get(id); });
+  for (const [i, x] of full.entries()) if (x.order !== i) { x.order = i; await db.put(pg.store, x); }
+}
+/**
+ * Lets the cards in `grid` be dragged into a new order: hold one a moment, then drag it; the others make room.
+ * A quick swipe still scrolls the page. `done(ids)` gets the new order.
+ */
+function sortableGrid(grid, done) {
+  let drag = null, timer = 0, raf = 0;
+  const cards = () => [...grid.children].filter((c) => c.dataset.id);
+  const at = (el) => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; };
+  // where a card sits in the grid's layout, leaving out any move it is still animating (the grid is positioned)
+  const slot = (el) => { const g = grid.getBoundingClientRect(); return { x: g.left + el.offsetLeft, y: g.top + el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }; };
+  function place() {
+    const base = drag.base;
+    drag.card.style.transform = `translate(${drag.px - drag.gx - base.x}px, ${drag.py - drag.gy - base.y}px) scale(1.06)`;
+  }
+  function measureBase() { drag.base = slot(drag.card); }
+  function moveTo(target) {
+    const list = cards(), from = list.indexOf(drag.card), to = list.indexOf(target);
+    if (from < 0 || to < 0 || from === to) return;
+    const before = new Map(list.map((c) => [c, at(c)]));
+    grid.insertBefore(drag.card, to > from ? target.nextSibling : target);
+    measureBase(); place();
+    for (const c of cards()) {
+      if (c === drag.card) continue;
+      const a = before.get(c), b = at(c);
+      const dx = a.x - b.x, dy = a.y - b.y;
+      if (!dx && !dy) continue;
+      c.style.transition = 'none'; c.style.transform = `translate(${dx}px, ${dy}px)`;
+      void c.offsetWidth;
+      c.style.transition = 'transform .32s var(--ease)'; c.style.transform = '';
+    }
+    haptic('select');
+  }
+  function track() {
+    if (!drag) return;
+    const edge = 90, bottomEdge = window.innerHeight - 140;
+    const v = drag.py < edge ? -Math.ceil((edge - drag.py) / 6) : drag.py > bottomEdge ? Math.ceil((drag.py - bottomEdge) / 6) : 0;
+    if (v) { window.scrollBy(0, v); measureBase(); place(); hover(); }
+    raf = requestAnimationFrame(track);
+  }
+  function hover() {
+    const over = cards().find((c) => { if (c === drag.card) return false; const r = slot(c); return drag.px > r.x && drag.px < r.x + r.w && drag.py > r.y && drag.py < r.y + r.h; });
+    if (over) moveTo(over);
+  }
+  function begin() {
+    const r = at(drag.card);
+    drag.on = true; drag.gx = drag.sx - r.x; drag.gy = drag.sy - r.y;
+    drag.card.classList.add('dragging');
+    measureBase(); place();
+    haptic('medium');
+    raf = requestAnimationFrame(track);
+  }
+  function finish() {
+    clearTimeout(timer);
+    cancelAnimationFrame(raf);
+    if (!drag) return;
+    const d = drag; drag = null;
+    if (!d.on) return;
+    d.card.style.transition = 'transform .3s var(--spring)'; d.card.style.transform = '';
+    d.card.classList.remove('dragging');
+    setTimeout(() => { d.card.style.transition = ''; }, 320);
+    done(cards().map((c) => c.dataset.id));
+  }
+  grid.addEventListener('pointerdown', (e) => {
+    const card = e.target.closest('[data-id]');
+    if (!card || card.parentElement !== grid || drag || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    drag = { card, id: e.pointerId, sx: e.clientX, sy: e.clientY, px: e.clientX, py: e.clientY, on: false };
+    try { card.setPointerCapture(e.pointerId); } catch { /* the grid still hears it */ }
+    timer = setTimeout(() => { if (drag && !drag.on) begin(); }, e.pointerType === 'mouse' ? 120 : 220);
+  });
+  grid.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    drag.px = e.clientX; drag.py = e.clientY;
+    if (!drag.on) { if (Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 8) { clearTimeout(timer); drag = null; } return; }
+    place(); hover();
+  });
+  // once a card is lifted the page must not scroll under the finger
+  grid.addEventListener('touchmove', (e) => { if (drag?.on) e.preventDefault(); }, { passive: false });
+  grid.addEventListener('pointerup', (e) => { if (drag && e.pointerId === drag.id) finish(); });
+  grid.addEventListener('pointercancel', (e) => { if (drag && e.pointerId === drag.id) finish(); });
+  grid.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
 /** Search, favourites and filters for the closet or the looks page. `redraw` repaints the list below it. */
@@ -1413,6 +1549,7 @@ function itemMenu(it, anchor, e) {
     { icon: 'look', label: 'Style a look', run: () => openEditor(null, suggestLook(it.id)) },
     { icon: 'heart', label: it.fav ? 'Remove favourite' : 'Favourite', run: async () => { await toggleFav(it, 'items'); render(); } },
     { icon: 'select', label: 'Select', run: () => startSelect(it.id) },
+    { icon: 'grip', label: 'Move items', run: () => startReorder('closet') },
     { icon: 'trash', label: 'Delete', danger: true, run: () => deleteItem(it) },
   ], e);
 }
@@ -1778,8 +1915,8 @@ async function openAdd({ item = null, cat = null, source = null, kind = 'library
       </div>
       <p class="pick-hint">Use a plain, light background. Choose several photos to add them together.</p>
     </div>`);
-    press($('[data-a=cam]', p), { tap: () => pickFile('camera') });
-    press($('[data-a=lib]', p), { tap: () => pickFile('library') });
+    press($('[data-a=cam]', p), { tap: () => photoGuide(pickFile, 'camera') });
+    press($('[data-a=lib]', p), { tap: () => photoGuide(pickFile, 'library') });
     photo.append(p);
     details.innerHTML = '';
   }
@@ -2633,16 +2770,18 @@ function renderOutfits() {
       const cols = outfitColors(o);
       const n = wears(o);
       const card = h(`<div class="look" data-id="${o.id}" style="animation-delay:${Math.min(idx, 10) * 40}ms">
-        <button class="look-open"${n ? ` aria-label="${esc(o.name)}, worn ${n} time${n === 1 ? '' : 's'}"` : ''}><span class="thumb-wrap" style="background:${boardFor(o)}"><img class="thumb" alt="" /></span>
-        <span class="meta"><span class="name">${esc(o.name)}</span><span class="sub"><span class="dots">${cols.slice(0, 5).map((c) => `<i style="background:${c}"></i>`).join('')}</span>${n ? `<span class="wn">Worn ${n}×</span>` : ''}</span></span></button>
+        <button class="look-open" aria-label="${esc(named(o) ? o.name : 'Look')}${n ? `, worn ${n} time${n === 1 ? '' : 's'}` : ''}"><span class="thumb-wrap" style="background:${boardFor(o)}"><img class="thumb" alt="" /></span>
+        <span class="meta"><span class="name">${named(o) ? esc(o.name) : '&nbsp;'}</span><span class="sub"><span class="dots">${cols.slice(0, 5).map((c) => `<i style="background:${c}"></i>`).join('')}</span>${n ? `<span class="wn">Worn ${n}×</span>` : ''}</span></span></button>
         ${o.fav ? heartBtn(o) : ''}</div>`);
       const open = $('.look-open', card);
       showLookPic($('img.thumb', card), o);
-      press(open, { tap: () => openEditor(o), long: (e) => lookMenu(o, card, e) });
+      if (reorder.on === 'outfits') card.classList.add('moving');
+      else press(open, { tap: () => openEditor(o), long: (e) => lookMenu(o, card, e) });
       const heart = $('.heart', card); // shown only on favourites; tapping it takes the favourite away
-      if (heart) bindHeart(heart, o, 'outfits', () => { if (!o.fav) { heart.classList.add('gone'); setTimeout(() => heart.remove(), 260); } if (view.outfits.fav) drawGrid(); });
+      if (heart && !reorder.on) bindHeart(heart, o, 'outfits', () => { if (!o.fav) { heart.classList.add('gone'); setTimeout(() => heart.remove(), 260); } if (view.outfits.fav) drawGrid(); });
       grid.append(card);
     });
+    if (reorder.on === 'outfits') { grid.classList.add('moving'); sortableGrid(grid, (ids) => saveOrder('outfits', ids)); }
     host.append(grid);
   }
   drawGrid();
@@ -2653,12 +2792,13 @@ function lookMenu(o, card, e) {
     { icon: 'edit', label: 'Open', run: () => openEditor(o) },
     { icon: 'heart', label: o.fav ? 'Remove favourite' : 'Favourite', run: async () => { await toggleFav(o, 'outfits'); renderOutfits(); } },
     { icon: 'share', label: 'Share', run: () => shareLook(o) },
+    { icon: 'grip', label: 'Move looks', run: () => startReorder('outfits') },
     { icon: 'copy', label: 'Duplicate', run: async () => {
-      const copy = { ...structuredClone(o), id: uid(), name: o.name + ' ii', created: Date.now(), updated: Date.now(), worn: [], fav: false };
+      const copy = { ...structuredClone(o), id: uid(), name: named(o) ? o.name + ' ii' : 'Untitled', created: Date.now(), updated: Date.now(), worn: [], fav: false };
       await db.put('outfits', copy); state.outfits.push(copy); haptic('success'); renderOutfits();
     } },
     { icon: 'trash', label: 'Delete', danger: true, run: async () => {
-      if (!(await confirmSheet('Delete this look?', o.name))) return;
+      if (!(await confirmSheet('Delete this look?', named(o) ? o.name : ''))) return;
       state.outfits = state.outfits.filter((x) => x.id !== o.id); await db.del('outfits', o.id); renderOutfits();
     } },
   ], e);
@@ -2764,7 +2904,7 @@ function openEditor(outfit = null, startIds = []) {
   const c = h(`<div class="editor">
     <div class="editor-top">
       <button class="round" data-a="back" aria-label="Back">${svg('back')}</button>
-      <input class="input" data-name value="${esc(o.name)}" maxlength="40" aria-label="Name of the look" />
+      <input class="input" data-name value="${named(o) ? esc(o.name) : ''}" placeholder="Name" maxlength="40" aria-label="Name of the look" />
       <div class="palette-tray"><div class="pill-strip" data-in aria-label="Colours in this look"></div></div>
       <button class="round dark" data-a="save" aria-label="Save">${svg('check')}</button>
     </div>
@@ -3289,7 +3429,25 @@ async function drawLook(o, { W, H }, width) {
  * and every item whole: one that hangs over the board's edge in the editor is cut there, never here. Made once
  * per visit, one at a time, so a long list of looks never holds the page up.
  */
-const CARD_W = 480, CARD_H = 720; // 2:3, a little taller than the closet's 4:5 tiles, as looks are tall
+const CARD_W = 480, CARD_H = 720;
+/** The part of a picture that is not see-through, as fractions of its size (worked out once per picture). */
+const visibleBoxes = new WeakMap();
+function visibleBox(img) {
+  let vb = visibleBoxes.get(img);
+  if (vb) return vb;
+  vb = { l: 0, t: 0, r: 1, b: 1 };
+  try {
+    const W = Math.max(1, Math.min(160, img.naturalWidth)), H = Math.max(1, Math.round(W * img.naturalHeight / img.naturalWidth));
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    const g = cv.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0, W, H);
+    const d = g.getImageData(0, 0, W, H).data;
+    let l = W, r = -1, t = H, b = -1;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (d[(y * W + x) * 4 + 3] > 24) { if (x < l) l = x; if (x > r) r = x; if (y < t) t = y; if (y > b) b = y; }
+    if (r >= l && b >= t) vb = { l: l / W, t: t / H, r: (r + 1) / W, b: (b + 1) / H };
+  } catch { /* the whole picture counts */ }
+  visibleBoxes.set(img, vb);
+  return vb;
+} // 2:3, a little taller than the closet's 4:5 tiles, as looks are tall
 async function drawCard(o, dark = isDark()) {
   const board = boardFor(o, dark);
   const { H } = await lookSize(o);
@@ -3298,20 +3456,24 @@ async function drawCard(o, dark = isDark()) {
     const it = itemById(p.itemId); if (!it) continue;
     try { shown.push({ p, img: await getImg(it, edgeOn(o, it, board)) }); } catch { /* a picture that cannot load is left out */ }
   }
-  // what the items cover, in board widths, each as turned (an empty look shows its board)
+  // what the items really cover, in board widths: each picture's visible part (not its clear edges), as turned
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const { p, img } of shown) {
     const w = p.w, hh = w * (img.naturalHeight / img.naturalWidth || 1), a = (p.rot || 0) * Math.PI / 180;
-    const c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
-    const ex = (c * w + s * hh) / 2, ey = (s * w + c * hh) / 2, cy = p.y * H;
-    x0 = Math.min(x0, p.x - ex); x1 = Math.max(x1, p.x + ex); y0 = Math.min(y0, cy - ey); y1 = Math.max(y1, cy + ey);
+    const vb = visibleBox(img), cos = Math.cos(a), sin = Math.sin(a), cy = p.y * H;
+    for (const fx of [vb.l, vb.r]) for (const fy of [vb.t, vb.b]) {
+      let lx = (fx - 0.5) * w; const ly = (fy - 0.5) * hh;
+      if (p.flip) lx = -lx;
+      const X = p.x + lx * cos - ly * sin, Y = cy + lx * sin + ly * cos;
+      x0 = Math.min(x0, X); x1 = Math.max(x1, X); y0 = Math.min(y0, Y); y1 = Math.max(y1, Y);
+    }
   }
   if (!shown.length) { x0 = 0; x1 = 1; y0 = 0; y1 = H; }
-  // they fill the card, with a margin all round; a look of one or two small items is not blown up past
-  // about twice the size it has on the board
-  const margin = Math.min(CARD_W, CARD_H) * 0.07;
+  // they fill the card, with only a thin margin; a look of one or two small items is not blown up past
+  // about three times the size it has on the board
+  const margin = Math.min(CARD_W, CARD_H) * 0.035;
   const fit = Math.min(CARD_W / 1, CARD_H / H);
-  const k = Math.min((CARD_W - 2 * margin) / Math.max(1e-3, x1 - x0), (CARD_H - 2 * margin) / Math.max(1e-3, y1 - y0), fit * 2.2);
+  const k = Math.min((CARD_W - 2 * margin) / Math.max(1e-3, x1 - x0), (CARD_H - 2 * margin) / Math.max(1e-3, y1 - y0), fit * 3);
   const ox = CARD_W / 2 - (x0 + x1) / 2 * k, oy = CARD_H / 2 - (y0 + y1) / 2 * k;
   const cv = document.createElement('canvas'); cv.width = CARD_W; cv.height = CARD_H;
   const ctx = cv.getContext('2d');
@@ -3393,7 +3555,7 @@ function renderStats(root) {
       <div><small>Thrifted</small><b data-thrifted>${state.items.filter((i) => i.thrifted).length}</b></div>
     </div>
     ${worn.length ? `<h3 class="st-h">Most worn</h3><div class="st-pieces">${worn.slice(0, 3).map((it) => `<button data-piece="${it.id}" aria-label="${esc(it.name)}, worn ${wears(it)} times"><span class="st-tile"><img src="${stickerOf(it)}" alt="" /></span><span class="st-n">${wears(it)}×</span></button>`).join('')}</div>` : ''}
-    ${topLook ? `<h3 class="st-h">Most worn look</h3><button class="st-look" data-look="${topLook.id}"><span class="thumb-wrap" style="background:${boardFor(topLook)}"><img alt="" /></span><span><b>${esc(topLook.name)}</b><small>${wears(topLook)}×</small></span></button>` : ''}
+    ${topLook ? `<h3 class="st-h">Most worn look</h3><button class="st-look" data-look="${topLook.id}"><span class="thumb-wrap" style="background:${boardFor(topLook)}"><img alt="" /></span><span><b>${named(topLook) ? esc(topLook.name) : '&nbsp;'}</b><small>${wears(topLook)}×</small></span></button>` : ''}
     <button class="value-pill" data-a="prices" aria-label="Closet value ${money(t.v)}, ${status}. Open the price list">
       <span class="vp-l">Closet value</span><span class="vp-v">${money(t.v)}</span>
       <span class="vp-s">${status}</span>${svg('back', 'class="vp-c"')}
@@ -3529,6 +3691,7 @@ function settingsPanel() {
         ${[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button data-theme-opt="${k}">${l}</button>`).join('')}</div></div>
     </div>
     <div class="set-card">
+      <button class="set-link" data-a="tips">${svg('camera')}<span>Photo tips<small>How to take photos that cut out cleanly</small></span>${svg('chev', 'class="go"')}</button>
       <button class="set-link" data-a="types">${svg('tag')}<span>Types<small>Choose the types each category offers</small></span>${svg('chev', 'class="go"')}</button>
       <button class="set-link" data-a="mixrows">${svg('layers')}<span>Mix rows<small>${mix.rows.map((r) => esc(CATS[r.cat].label)).join(' · ')}</small></span>${svg('chev', 'class="go"')}</button>
     </div>
@@ -3551,6 +3714,7 @@ function settingsPanel() {
   sync();
   press($('[data-a=mixrows]', c), { tap: () => openMixRows() });
   press($('[data-a=types]', c), { tap: () => openTypes() });
+  press($('[data-a=tips]', c), { tap: () => photoGuide(quickPick, 'library', { always: true }) });
   press($('[data-a=privacy]', c), { tap: () => openPrivacy() });
   press($('[data-a=exp]', c), { tap: exportData });
   press($('[data-a=imp]', c), { tap: () => { const f = $('#file-import'); f.value = ''; f.onchange = () => f.files[0] && importData(f.files[0]); f.click(); } });
@@ -3705,7 +3869,7 @@ function bindChrome() {
     ], e),
     hapticTap: null, // the menu gives its own
   });
-  press($('#select-btn'), { tap: () => (sel.on ? endSelect() : startSelect()), hapticTap: 'select' });
+  press($('#select-btn'), { tap: () => (reorder.on ? endReorder() : sel.on ? endSelect() : startSelect()), hapticTap: 'select' });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && sel.on && !stack.length && !menuOpen) { endSelect(); return; }
     if (e.key !== 'Escape' || !stack.length) return;
@@ -3720,6 +3884,7 @@ function bindChrome() {
  */
 function closetAction(name) {
   if (stack.length || menuOpen || loadingEl) return false;
+  if (reorder.on) endReorder();
   const run = { create: () => openCreate(), add: () => openAdd(), look: () => openEditor(), surprise: () => surpriseLook(), mix: () => setView('mix'), more: () => setView('more'), stats: () => setView('more'), closet: () => setView('closet'), looks: () => setView('outfits') }[name];
   if (!run) return false;
   run();
@@ -3751,13 +3916,60 @@ function openCreate() {
   const s = sheet(c);
   s.el.classList.add('tall');
   // the photo pickers open within the tap itself (the phone asks for that); the rest once the sheet is away
-  press($('[data-a=camera]', c), { tap: () => { quickPick('camera'); s.close(); } });
-  press($('[data-a=library]', c), { tap: () => { quickPick('library'); s.close(); } });
+  // the guide first (once Create has gone), or straight to the picker when the guide is switched off
+  const pickVia = (kind) => {
+    if (guideOff()) { quickPick(kind); s.close(); return; }
+    s.close(); setTimeout(() => photoGuide(quickPick, kind), 180);
+  };
+  press($('[data-a=camera]', c), { tap: () => pickVia('camera') });
+  press($('[data-a=library]', c), { tap: () => pickVia('library') });
   press($('[data-a=look]', c), { tap: () => { s.close(); setTimeout(() => openEditor(), 160); } });
   press($('[data-a=surprise]', c), { tap: () => {
     if (none) { haptic('warning'); toast('Add some clothes first'); return; }
     s.close(); setTimeout(() => surpriseLook(), 160);
   } });
+}
+
+/*
+ * A short guide before the camera or the photos open: a contrasting background is what makes a clean cut-out.
+ * It shows each time until "Don't show this again"; More > Photo tips brings it back. `go(kind)` opens the picker
+ * ('camera' or 'library') within the tap, as the phone asks.
+ */
+const GUIDE_KEY = 'closet.guide';
+const guideOff = () => { try { return localStorage.getItem(GUIDE_KEY) === 'off'; } catch { return false; } };
+const TEE = 'M8 4 3.5 6.5l1.8 3.6L7.5 9v11h9V9l2.2 1.1 1.8-3.6L16 4c-.6 1.4-2.2 2.3-4 2.3S8.6 5.4 8 4z';
+function photoGuide(go, from = 'library', { always = false, before = null } = {}) {
+  if (!always && guideOff()) { go(from); before?.(); return; }
+  before?.();
+  const eg = (bg, fg, ok, text) => `<figure class="${ok ? 'ok' : 'no'}"><span class="g-pic" style="background:${bg}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${TEE}" fill="${fg}" stroke="none"/></svg></span><figcaption>${svg(ok ? 'check' : 'close')}${text}</figcaption></figure>`;
+  const c = h(`<div class="guide"><h2>Photo tips</h2>
+    <p class="sub">The background is removed best when it contrasts with the item.</p>
+    <div class="g-eg">
+      ${eg('#2f2b27', '#e6d7bb', true, 'Light item, dark background')}
+      ${eg('#f6f3ee', '#26262a', true, 'Dark item, light background')}
+      ${eg('#e4d8c3', '#dccdb2', false, 'Similar colours')}
+    </div>
+    <ul class="g-tips">
+      <li>Lay the item flat, or hang it, on a plain surface.</li>
+      <li>Use soft, even light without strong shadows.</li>
+      <li>Fit the whole item in the photo.</li>
+    </ul>
+    <div class="row-btns">
+      <button class="btn ${from === 'camera' ? '' : 'soft'}" data-a="cam">${svg('camera')}<span>Take photo</span></button>
+      <button class="btn ${from === 'camera' ? 'soft' : ''}" data-a="lib">${svg('image')}<span>Choose photos</span></button>
+    </div>
+    <button class="g-skip" data-a="skip" role="switch" aria-checked="${guideOff()}"><i>${svg('check')}</i><span>Don't show this again</span></button>
+  </div>`);
+  const sh = sheet(c);
+  // the picker opens within the tap; the guide goes away behind it
+  press($('[data-a=cam]', c), { tap: () => { go('camera'); sh.close(); } });
+  press($('[data-a=lib]', c), { tap: () => { go('library'); sh.close(); } });
+  const skip = $('[data-a=skip]', c);
+  press(skip, { tap: () => {
+    const off = skip.getAttribute('aria-checked') !== 'true';
+    skip.setAttribute('aria-checked', String(off));
+    try { if (off) localStorage.setItem(GUIDE_KEY, 'off'); else localStorage.removeItem(GUIDE_KEY); } catch { /* shown again next time */ }
+  }, hapticTap: 'select' });
 }
 
 function quickPick(kind) {
