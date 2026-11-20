@@ -3880,6 +3880,7 @@ function bindChrome() {
   });
   press($('#select-btn'), { tap: () => (reorder.on ? endReorder() : sel.on ? endSelect() : startSelect()), hapticTap: 'select' });
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && reorder.on && !stack.length && !menuOpen) { endReorder(); return; }
     if (e.key === 'Escape' && sel.on && !stack.length && !menuOpen) { endSelect(); return; }
     if (e.key !== 'Escape' || !stack.length) return;
     const top = stack[stack.length - 1];
@@ -3985,24 +3986,68 @@ function quickPick(kind) {
   const input = kind === 'camera' ? $('#file-camera') : $('#file-library');
   input.value = '';
   if (kind === 'library') input.multiple = true;
-  input.onchange = async () => {
-    const files = [...(input.files || [])];
-    if (!files.length) return;
-    // the card shows at once, before the item sheet opens and the photo is read
-    showLoading(files.length > 1 ? `Getting ${files.length} photos ready` : 'Getting your photo ready');
-    await painted();
-    try {
-      if (files.length > 1) { openBatch(files, state.filterCat !== 'all' ? state.filterCat : null); await painted(); }
-      else await openAdd({ source: files[0], kind });
-    } finally { hideLoading(); }
-  };
+  input.onchange = () => addPhotos([...(input.files || [])], kind);
   input.click();
+}
+/** Photos to add: one opens the item form, several the batch list. A loading card shows at once. */
+async function addPhotos(files, kind = 'library') {
+  if (!files.length) return;
+  showLoading(files.length > 1 ? `Getting ${files.length} photos ready` : 'Getting your photo ready');
+  await painted();
+  try {
+    if (files.length > 1) { openBatch(files, state.filterCat !== 'all' ? state.filterCat : null); await painted(); }
+    else await openAdd({ source: files[0], kind });
+  } finally { hideLoading(); }
+}
+
+/*
+ * iPad: photos dragged in from another app (Photos, Files, Safari in Split View) are added like picked ones,
+ * and a hardware keyboard has shortcuts: Cmd-N new item, Cmd-Shift-N new look, Cmd-F search, Cmd-1 to Cmd-4 pages.
+ */
+function bindIpad() {
+  let hint = null, depth = 0;
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+  const busy = () => stack.length || menuOpen || loadingEl;
+  const hide = () => { depth = 0; if (hint) { const el = hint; hint = null; el.classList.add('out'); setTimeout(() => el.remove(), 250); } };
+  window.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e) || busy()) return;
+    depth++;
+    if (!hint) { hint = h(`<div class="drop-hint" aria-hidden="true"><div>${svg('image')}<b>Drop photos to add them</b></div></div>`); document.body.append(hint); }
+  });
+  window.addEventListener('dragover', (e) => { if (hasFiles(e) && !busy()) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+  window.addEventListener('dragleave', (e) => { if (hasFiles(e) && --depth <= 0) hide(); });
+  window.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    hide();
+    if (busy()) return;
+    const files = [...e.dataTransfer.files].filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|heic|heif|webp|gif)$/i.test(f.name));
+    if (!files.length) { toast('Only photos can be added'); return; }
+    if (reorder.on) endReorder();
+    if (sel.on) endSelect();
+    if (state.view !== 'closet') setView('closet');
+    addPhotos(files.slice(0, BATCH_MAX));
+  });
+  document.addEventListener('keydown', (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey || busy()) return;
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
+    const k = e.key.toLowerCase();
+    const tabs = { 1: 'closet', 2: 'mix', 3: 'outfits', 4: 'more' };
+    if (tabs[k]) { e.preventDefault(); if (reorder.on) endReorder(); if (sel.on) endSelect(); setView(tabs[k]); return; }
+    if (typing) return;
+    if (k === 'n') { e.preventDefault(); if (e.shiftKey) openEditor(); else openAdd(); return; }
+    if (k === 'f' && (state.view === 'closet' || state.view === 'outfits')) {
+      const inp = $(`#view-${state.view} .search input`);
+      if (inp) { e.preventDefault(); inp.focus(); inp.select(); }
+    }
+  });
 }
 
 (async function boot() {
   applyPrefs(false);
   window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => { applyPrefs(false); render(); });
   bindChrome();
+  bindIpad();
   await load();
   render();
   if (nativeChrome()) document.documentElement.classList.add('native-bar');

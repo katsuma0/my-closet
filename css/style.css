@@ -920,3 +920,30 @@ html.locked body { height: auto; min-height: 100%; }
 .moving .heart { display: none; }
 #select-btn.done { background: var(--ink); color: var(--bg); }
 @media (prefers-reduced-motion: reduce) { .grid.moving > [data-id], .looks.moving > [data-id] { animation: none !important; } }
+
+/* ---------- iPad and other wide screens ---------- */
+/* three columns from a small iPad up (two on phones and narrow Split View), four on a wide landscape iPad */
+@media (min-width: 600px) {
+  .grid, .looks { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 26px 16px; }
+  .picker-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+@media (min-width: 900px) {
+  #app { max-width: 1100px; }
+  main { padding-left: 28px; padding-right: 28px; }
+  .top { padding-left: 32px; padding-right: 32px; }
+  /* pages that read best narrow stay a comfortable width in the middle */
+  #view-mix, #view-more { max-width: 720px; margin-left: auto; margin-right: auto; }
+  /* sheets float as cards above the page instead of filling its width */
+  .sheet:not(.full) { max-width: 640px; bottom: calc(24px + var(--safe-b)); border-radius: 30px; max-height: calc(100dvh - 80px - var(--safe-b)); padding-bottom: 26px; transform: translateY(calc(100% + 60px)); }
+  .sheet:not(.full).show { transform: translateY(0); }
+  .sheet.tall:not(.full) { min-height: 0; }
+}
+@media (min-width: 1180px) {
+  .grid, .looks { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+/* photos dragged in from another app */
+.drop-hint { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; pointer-events: none; background: color-mix(in srgb, var(--bg) 70%, transparent); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: fadeIn .2s var(--ease); transition: opacity .25s var(--ease); }
+.drop-hint.out { opacity: 0; }
+.drop-hint > div { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 34px 44px; border-radius: 28px; border: 2px dashed var(--sage-deep); background: var(--bg); color: var(--ink); box-shadow: var(--shadow-md); }
+.drop-hint svg { width: 34px; height: 34px; color: var(--sage-deep); }
+.drop-hint b { font-weight: 500; font-size: calc(16px * var(--ts)); }
